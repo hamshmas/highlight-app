@@ -19,7 +19,33 @@ interface TransactionRow {
 
 // Google Cloud Vision 클라이언트 초기화
 function getVisionClient(): ImageAnnotatorClient | null {
-  // Base64 인코딩된 환경 변수 우선 확인
+  // 방법 1: 개별 환경변수 사용 (Vercel에서 가장 안정적)
+  const projectId = process.env.GOOGLE_CLOUD_PROJECT_ID;
+  const clientEmail = process.env.GOOGLE_CLOUD_CLIENT_EMAIL;
+  let privateKey = process.env.GOOGLE_CLOUD_PRIVATE_KEY;
+
+  if (projectId && clientEmail && privateKey) {
+    console.log("Using individual environment variables for Vision client");
+
+    // Vercel에서 줄바꿈이 리터럴 \n으로 저장될 수 있음
+    if (privateKey.includes('\\n')) {
+      privateKey = privateKey.replace(/\\n/g, '\n');
+    }
+
+    console.log("Creating Vision client with project:", projectId);
+    console.log("Client email:", clientEmail);
+    console.log("Private key has newlines:", privateKey.includes('\n'));
+
+    return new ImageAnnotatorClient({
+      projectId,
+      credentials: {
+        client_email: clientEmail,
+        private_key: privateKey,
+      },
+    });
+  }
+
+  // 방법 2: JSON 환경변수 (fallback)
   let credentialsJson = process.env.GOOGLE_CLOUD_CREDENTIALS_BASE64
     ? Buffer.from(process.env.GOOGLE_CLOUD_CREDENTIALS_BASE64, 'base64').toString('utf-8')
     : process.env.GOOGLE_CLOUD_CREDENTIALS;
@@ -30,66 +56,40 @@ function getVisionClient(): ImageAnnotatorClient | null {
   }
 
   try {
-    // JSON 파싱 시도
     let credentials;
     try {
       credentials = JSON.parse(credentialsJson);
-    } catch (parseError) {
-      // Vercel에서 이중 인코딩될 수 있음
+    } catch {
       console.log("First JSON parse failed, trying to unescape...");
       const unescaped = credentialsJson.replace(/\\"/g, '"').replace(/\\\\/g, '\\');
       credentials = JSON.parse(unescaped);
     }
 
-    // private_key가 있는지 확인
     if (!credentials.private_key) {
       console.error("Google Cloud credentials missing private_key");
       return null;
     }
 
-    // private_key 형식 정규화 (다양한 인코딩 케이스 처리)
-    let privateKey = credentials.private_key;
-
-    // 1. 리터럴 \\n을 실제 줄바꿈으로 변환 (여러 번 적용될 수 있음)
-    while (privateKey.includes('\\n')) {
-      privateKey = privateKey.replace(/\\n/g, '\n');
+    let pk = credentials.private_key;
+    while (pk.includes('\\n')) {
+      pk = pk.replace(/\\n/g, '\n');
     }
-
-    // 2. 줄바꿈이 전혀 없는 경우 (한 줄로 된 키) - 수동으로 포맷팅
-    if (!privateKey.includes('\n')) {
-      // BEGIN 마커 뒤에 줄바꿈 추가
-      privateKey = privateKey.replace('-----BEGIN PRIVATE KEY-----', '-----BEGIN PRIVATE KEY-----\n');
-      // END 마커 앞에 줄바꿈 추가
-      privateKey = privateKey.replace('-----END PRIVATE KEY-----', '\n-----END PRIVATE KEY-----\n');
+    if (!pk.endsWith('\n')) {
+      pk = pk + '\n';
     }
-
-    // 3. 마지막에 줄바꿈이 없으면 추가
-    if (!privateKey.endsWith('\n')) {
-      privateKey = privateKey + '\n';
-    }
-
-    credentials.private_key = privateKey;
 
     console.log("Creating Vision client with project:", credentials.project_id);
     console.log("Client email:", credentials.client_email);
-    console.log("Private key format check:");
-    console.log("  - starts with BEGIN:", privateKey.startsWith('-----BEGIN PRIVATE KEY-----'));
-    console.log("  - ends with END + newline:", privateKey.endsWith('-----END PRIVATE KEY-----\n'));
-    console.log("  - has internal newlines:", (privateKey.match(/\n/g) || []).length);
-    console.log("  - length:", privateKey.length);
 
-    // credentials 객체 대신 개별 필드를 직접 전달
     return new ImageAnnotatorClient({
       projectId: credentials.project_id,
       credentials: {
         client_email: credentials.client_email,
-        private_key: privateKey,
+        private_key: pk,
       },
     });
   } catch (error) {
     console.error("Failed to parse Google Cloud credentials:", error);
-    console.error("Credentials length:", credentialsJson.length);
-    console.error("Credentials preview:", credentialsJson.substring(0, 100));
     return null;
   }
 }

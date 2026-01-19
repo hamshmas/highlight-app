@@ -5,14 +5,152 @@ import { logAction } from "@/lib/supabase";
 import { generateFileHash, getCachedParsing, saveParsing, isCacheEnabled } from "@/lib/cache";
 import * as mupdf from "mupdf";
 import { GoogleGenerativeAI } from "@google/generative-ai";
+import { ImageAnnotatorClient } from "@google-cloud/vision";
 
-interface TransactionRow {
-  date: string;
-  description: string;
-  deposit: number;
-  withdrawal: number;
-  balance: number;
-  [key: string]: string | number;
+// 동적 컬럼 지원
+type TransactionRow = Record<string, string | number>;
+
+// ==================== 정규식 기반 텍스트 PDF 파싱 ====================
+
+// 날짜 패턴 확장 (MM/DD, MM월 DD일 포함)
+function isDataLine(line: string): boolean {
+  const datePatterns = [
+    /^\d{4}[.\-\/]\d{1,2}[.\-\/]\d{1,2}/,     // 2024.01.01, 2024-01-01, 2024/01/01
+    /^\d{2}[.\-\/]\d{1,2}[.\-\/]\d{1,2}/,     // 24.01.01, 24-01-01
+    /^\d{4}\.\s*\d{1,2}\.\s*\d{1,2}/,         // 2024. 1. 1 (공백 포함)
+    /^\d{1,2}[\/\-]\d{1,2}(?!\d)/,            // 01/05, 1-5 (MM/DD)
+    /^\d{1,2}월\s*\d{1,2}일/,                 // 1월 5일, 12월 25일
+  ];
+  return datePatterns.some(p => p.test(line.trim()));
+}
+
+// 금액 파싱 (괄호 음수 처리 포함)
+function parseAmount(str: string): number {
+  if (!str) return 0;
+
+  // 괄호 음수 처리: (1,000) → -1000
+  const isNegative = str.includes("(") && str.includes(")");
+
+  const cleaned = str.replace(/[,\s원₩\-\(\)]/g, "").trim();
+  if (!cleaned || cleaned === "") return 0;
+
+  const num = parseFloat(cleaned);
+  if (isNaN(num)) return 0;
+
+  return isNegative ? -Math.abs(num) : Math.abs(num);
+}
+
+// 헤더 라인 감지 (완화된 조건)
+function detectHeaderLine(lines: string[]): { headerIndex: number; columns: string[] } | null {
+  const headerKeywords = [
+    "거래일", "일자", "날짜", "date",
+    "입금", "출금", "금액", "잔액",
+    "적요", "내용", "거래내용", "비고", "메모",
+    "맡기신", "찾으신", "받으신", "보내신",
+    "거래점", "취급점", "지점",
+  ];
+
+  // 50줄까지 검색 (기존 30줄에서 확대)
+  for (let i = 0; i < Math.min(lines.length, 50); i++) {
+    const line = lines[i].trim();
+    if (!line) continue;
+
+    // 키워드 1개 이상이면 헤더 후보 (기존 2개에서 완화)
+    const matchCount = headerKeywords.filter(kw =>
+      line.toLowerCase().includes(kw.toLowerCase())
+    ).length;
+
+    if (matchCount >= 1) {
+      // 공백 1칸 이상으로 분리 (기존 2칸에서 완화)
+      const columns = line.split(/\s+/).map(c => c.trim()).filter(c => c.length > 0);
+      if (columns.length >= 2) {
+        return { headerIndex: i, columns };
+      }
+    }
+  }
+  return null;
+}
+
+// 데이터 라인 파싱 (완화된 조건)
+function parseDataLine(line: string, columns: string[]): TransactionRow | null {
+  const trimmedLine = line.trim();
+  if (!trimmedLine || !isDataLine(trimmedLine)) return null;
+
+  // 공백 1칸 이상으로 분리 (기존 2칸에서 완화)
+  const parts = trimmedLine.split(/\s+/).map(p => p.trim()).filter(p => p.length > 0);
+
+  if (parts.length < 2) return null;
+
+  const row: TransactionRow = {};
+
+  // 컬럼 수와 파트 수 매칭
+  for (let i = 0; i < columns.length && i < parts.length; i++) {
+    const col = columns[i];
+    const val = parts[i];
+
+    // 금액 컬럼이면 숫자로 변환
+    if (isAmountColumn(col)) {
+      row[col] = parseAmount(val);
+    } else {
+      row[col] = val;
+    }
+  }
+
+  // 빈 행 체크
+  const hasData = Object.values(row).some(v => v !== "" && v !== 0);
+  return hasData ? row : null;
+}
+
+// 정규식 기반 텍스트 파싱 메인 함수
+function parseTextWithRegex(text: string): { transactions: TransactionRow[]; columns: string[] } | null {
+  const lines = text.split("\n").map(l => l.trim()).filter(l => l.length > 0);
+
+  if (lines.length < 3) return null;
+
+  // 헤더 감지
+  const headerResult = detectHeaderLine(lines);
+  if (!headerResult) {
+    console.log("정규식 파싱: 헤더를 찾을 수 없음");
+    return null;
+  }
+
+  const { headerIndex, columns } = headerResult;
+  console.log(`정규식 파싱: 헤더 발견 (line ${headerIndex + 1}): ${columns.join(", ")}`);
+
+  // 데이터 행 파싱
+  const transactions: TransactionRow[] = [];
+
+  for (let i = headerIndex + 1; i < lines.length; i++) {
+    const row = parseDataLine(lines[i], columns);
+    if (row) {
+      transactions.push(row);
+    }
+  }
+
+  console.log(`정규식 파싱: ${transactions.length}개 거래 추출`);
+
+  return transactions.length > 0 ? { transactions, columns } : null;
+}
+
+// Google Cloud Vision 클라이언트 초기화
+function getVisionClient(): ImageAnnotatorClient | null {
+  let credentialsJson = process.env.GOOGLE_CLOUD_CREDENTIALS;
+  if (!credentialsJson) {
+    console.warn("Google Cloud credentials not configured");
+    return null;
+  }
+
+  try {
+    credentialsJson = credentialsJson.replace(/\n/g, "\\n");
+    if (credentialsJson.startsWith('"') && credentialsJson.endsWith('"')) {
+      credentialsJson = credentialsJson.slice(1, -1);
+    }
+    const credentials = JSON.parse(credentialsJson);
+    return new ImageAnnotatorClient({ credentials });
+  } catch (error) {
+    console.error("Failed to parse Google Cloud credentials:", error);
+    return null;
+  }
 }
 
 // Gemini API 클라이언트 초기화
@@ -41,7 +179,7 @@ function addTokenUsage(input: number, output: number) {
   totalTokenUsage.outputTokens += output;
 }
 
-// Gemini 2.5 Flash Lite 가격 (2025년 1월 기준)
+// Gemini 가격 계산
 const GEMINI_PRICING = {
   inputPricePerMillion: 0.075,
   outputPricePerMillion: 0.30,
@@ -55,34 +193,13 @@ function calculateCost(usage: TokenUsage): { usd: number; krw: number } {
   return { usd: totalUsd, krw: totalKrw };
 }
 
-// PDF에서 텍스트 추출 (mupdf 사용)
-function extractTextFromPdf(buffer: ArrayBuffer): string {
-  const pdfBuffer = Buffer.from(buffer);
-  const doc = mupdf.Document.openDocument(pdfBuffer, "application/pdf");
-  const pageCount = doc.countPages();
-
-  const allTexts: string[] = [];
-  for (let i = 0; i < pageCount; i++) {
-    const page = doc.loadPage(i);
-    const text = page.toStructuredText("preserve-whitespace").asText();
-    if (text) {
-      allTexts.push(text);
-    }
-  }
-
-  return allTexts.join("\n\n");
-}
-
 // AI로 샘플 거래 파싱 (처음 5개)
 async function parseSampleTransactions(sampleText: string): Promise<TransactionRow[] | null> {
   const gemini = getGeminiClient();
-  if (!gemini) {
-    console.log("Gemini API not configured");
-    return null;
-  }
+  if (!gemini) return null;
 
   try {
-    const model = gemini.getGenerativeModel({ model: "gemini-2.0-flash" });
+    const model = gemini.getGenerativeModel({ model: "gemini-2.5-flash-preview-04-17" });
 
     const prompt = `당신은 한국 은행 거래내역을 정확하게 파싱하는 전문가입니다.
 
@@ -92,22 +209,13 @@ async function parseSampleTransactions(sampleText: string): Promise<TransactionR
 ## 입력 텍스트
 ${sampleText}
 
-## 출력 형식
-반드시 유효한 JSON 배열만 반환하세요. 처음 5개 거래만 추출하세요.
-
 ## 중요: 컬럼명 규칙
 - 원본 문서에 있는 컬럼명(헤더)을 그대로 JSON 키로 사용하세요
-- 예: "거래일", "거래일자", "일자" → 원본 그대로 사용
-- 예: "적요", "내용", "거래내용" → 원본 그대로 사용
-- 예: "찾으신금액", "출금", "출금액" → 원본 그대로 사용
-- 예: "맡기신금액", "입금", "입금액" → 원본 그대로 사용
-- 예: "잔액", "거래후잔액" → 원본 그대로 사용
-- 공백이 있는 컬럼명은 공백을 제거하세요 (예: "거래 일자" → "거래일자")
+- 공백이 있는 컬럼명은 공백을 제거하세요
 
 ## 파싱 규칙
 - 날짜 값은 "YYYY.MM.DD" 형식으로 통일
 - 금액 값은 숫자만 (쉼표, 원, ₩ 제거)
-- 텍스트에서 발견되는 모든 컬럼을 추출하세요
 - 빈 값은 문자열 컬럼은 "", 숫자 컬럼은 0으로 설정
 
 JSON 배열만 반환하세요:`;
@@ -115,7 +223,6 @@ JSON 배열만 반환하세요:`;
     const result = await model.generateContent(prompt);
     const response = result.response.text();
 
-    // 토큰 사용량 추적
     const usageMetadata = result.response.usageMetadata;
     if (usageMetadata) {
       addTokenUsage(usageMetadata.promptTokenCount || 0, usageMetadata.candidatesTokenCount || 0);
@@ -123,19 +230,14 @@ JSON 배열만 반환하세요:`;
 
     let jsonStr = response;
     const codeBlockMatch = response.match(/```(?:json)?\s*([\s\S]*?)```/);
-    if (codeBlockMatch) {
-      jsonStr = codeBlockMatch[1].trim();
-    }
+    if (codeBlockMatch) jsonStr = codeBlockMatch[1].trim();
 
     const jsonMatch = jsonStr.match(/\[[\s\S]*\]/);
-    if (!jsonMatch) {
-      console.log("Failed to parse sample transactions");
-      return null;
-    }
+    if (!jsonMatch) return null;
 
     const transactions = JSON.parse(jsonMatch[0]) as TransactionRow[];
 
-    // 동적 컬럼명 지원을 위한 헬퍼 함수
+    // 유효한 거래만 필터링
     const findDateColumn = (tx: TransactionRow): string | null => {
       const dateKeywords = ["거래일", "일자", "날짜", "date"];
       for (const key of Object.keys(tx)) {
@@ -170,7 +272,6 @@ JSON 배열만 반환하세요:`;
         return dateVal && (depositVal > 0 || withdrawalVal > 0 || generalAmount > 0);
       })
       .map(tx => {
-        // 금액 컬럼 정규화
         const normalized = { ...tx };
         for (const key of Object.keys(normalized)) {
           const val = normalized[key];
@@ -184,19 +285,16 @@ JSON 배열만 반환하세요:`;
     console.log(`AI parsed ${validTransactions.length} sample transactions`);
     return validTransactions;
   } catch (error) {
-    console.error("Sample parsing error:", error);
+    console.error("Error parsing sample:", error);
     return null;
   }
 }
 
 // 텍스트를 청크로 분할
-function splitTextIntoChunks(text: string, chunkSize: number = 4000): string[] {
+function splitTextIntoChunks(text: string, chunkSize: number = 15000): string[] {
+  if (text.length <= chunkSize) return [text];
+
   const chunks: string[] = [];
-
-  if (text.length <= chunkSize) {
-    return [text];
-  }
-
   const datePattern = /\n(?=\d{4}[.\-\/]\d{1,2}[.\-\/]\d{1,2}|\d{2}[.\-\/]\d{1,2}[.\-\/]\d{1,2})/g;
 
   let startIndex = 0;
@@ -220,14 +318,10 @@ function splitTextIntoChunks(text: string, chunkSize: number = 4000): string[] {
     }
 
     const chunk = text.substring(startIndex, endIndex).trim();
-    if (chunk.length > 0) {
-      chunks.push(chunk);
-    }
+    if (chunk.length > 0) chunks.push(chunk);
 
     startIndex = endIndex;
-    if (startIndex === lastValidBreak) {
-      startIndex += chunkSize;
-    }
+    if (startIndex === lastValidBreak) startIndex += chunkSize;
     lastValidBreak = startIndex;
   }
 
@@ -238,13 +332,18 @@ function splitTextIntoChunks(text: string, chunkSize: number = 4000): string[] {
 async function parseChunkWithAI(
   chunkText: string,
   chunkIndex: number,
+  detectedColumns: string[],
   sampleExample: string
 ): Promise<TransactionRow[]> {
   const gemini = getGeminiClient();
   if (!gemini) return [];
 
   try {
-    const model = gemini.getGenerativeModel({ model: "gemini-2.0-flash" });
+    const model = gemini.getGenerativeModel({ model: "gemini-2.5-flash-preview-04-17" });
+
+    const columnsDescription = detectedColumns.length > 0
+      ? `사용할 컬럼명: ${detectedColumns.join(", ")}`
+      : "";
 
     const prompt = `당신은 한국 은행 거래내역을 정확하게 파싱하는 전문가입니다.
 
@@ -254,29 +353,21 @@ async function parseChunkWithAI(
 ## 참고: 이 문서의 형식 예시
 ${sampleExample}
 
+${columnsDescription ? `## ${columnsDescription}` : ""}
+
 ## 입력 텍스트 (청크 ${chunkIndex + 1})
 ${chunkText}
-
-## 출력 형식
-반드시 유효한 JSON 배열만 반환하세요.
-
-## 중요: 컬럼명 규칙
-- 위 예시에서 사용된 컬럼명을 정확히 동일하게 사용하세요
-- 원본 문서의 컬럼명을 그대로 JSON 키로 사용해야 합니다
-- 공백이 있는 컬럼명은 공백을 제거하세요
 
 ## 파싱 규칙
 - 날짜 값은 "YYYY.MM.DD" 형식으로 통일
 - 금액 값은 숫자만 (쉼표, 원, ₩ 제거)
 - 빈 값은 문자열 컬럼은 "", 숫자 컬럼은 0으로 설정
-- 위 예시와 정확히 동일한 형식으로 파싱하세요
 
 JSON 배열만 반환하세요:`;
 
     const result = await model.generateContent(prompt);
     const response = result.response.text();
 
-    // 토큰 사용량 추적
     const usageMetadata = result.response.usageMetadata;
     if (usageMetadata) {
       addTokenUsage(usageMetadata.promptTokenCount || 0, usageMetadata.candidatesTokenCount || 0);
@@ -287,15 +378,12 @@ JSON 배열만 반환하세요:`;
     if (codeBlockMatch) jsonStr = codeBlockMatch[1].trim();
 
     const jsonMatch = jsonStr.match(/\[[\s\S]*\]/);
-    if (!jsonMatch) {
-      console.log(`Chunk ${chunkIndex + 1}: No JSON array found`);
-      return [];
-    }
+    if (!jsonMatch) return [];
 
     const transactions = JSON.parse(jsonMatch[0]) as TransactionRow[];
-    console.log(`Chunk ${chunkIndex + 1}: parsed ${transactions.length} raw transactions`);
+    console.log(`Chunk ${chunkIndex + 1}: parsed ${transactions.length} transactions`);
 
-    // 동적 컬럼명 지원
+    // 필터링 및 정규화
     const findDateColumn = (tx: TransactionRow): string | null => {
       const dateKeywords = ["거래일", "일자", "날짜", "date"];
       for (const key of Object.keys(tx)) {
@@ -321,7 +409,7 @@ JSON 배열만 반환하세요:`;
     const withdrawalKeywords = ["출금", "찾으신", "보내신", "withdrawal"];
     const generalAmountKeywords = ["거래금액", "금액", "amount"];
 
-    const filtered = transactions
+    return transactions
       .filter(tx => {
         const dateVal = findDateColumn(tx);
         const depositVal = findAmountValue(tx, depositKeywords);
@@ -339,60 +427,50 @@ JSON 배열만 반환하세요:`;
         }
         return normalized;
       });
-
-    console.log(`Chunk ${chunkIndex + 1}: ${filtered.length} transactions after filtering`);
-    return filtered;
   } catch (error) {
     console.error(`Chunk ${chunkIndex + 1} parsing error:`, error);
     return [];
   }
 }
 
-// AI 병렬 파싱
-async function parseWithAIParallel(
+// 병렬 AI 파싱
+async function parseFullTextWithAI(
   text: string,
+  detectedColumns: string[],
   sampleTransactions: TransactionRow[]
 ): Promise<TransactionRow[] | null> {
   const gemini = getGeminiClient();
   if (!gemini) return null;
 
   try {
-    // 샘플 예시 생성
     const sampleExample = sampleTransactions.length > 0
       ? JSON.stringify(sampleTransactions.slice(0, 3), null, 2)
-      : "샘플 없음";
+      : "[]";
 
-    // 텍스트를 청크로 분할 (4000자로 줄여 병렬성 증가)
-    const chunks = splitTextIntoChunks(text, 4000);
-    console.log(`Splitting text into ${chunks.length} chunks for parallel AI processing`);
-
-    // 병렬 처리
-    const chunkPromises = chunks.map((chunk, index) =>
-      parseChunkWithAI(chunk, index, sampleExample)
-    );
+    const chunks = splitTextIntoChunks(text, 15000);
+    console.log(`Splitting text into ${chunks.length} chunks`);
 
     const startTime = Date.now();
-    const results = await Promise.all(chunkPromises);
-    const elapsed = Date.now() - startTime;
-    console.log(`Parallel AI processing completed in ${elapsed}ms`);
+    const results = await Promise.all(
+      chunks.map((chunk, index) => parseChunkWithAI(chunk, index, detectedColumns, sampleExample))
+    );
+    console.log(`Parallel AI processing completed in ${Date.now() - startTime}ms`);
 
-    // 결과 병합
-    const allTransactions = results.flat();
+    const allTransactions: TransactionRow[] = [];
+    for (const chunkTransactions of results) {
+      allTransactions.push(...chunkTransactions);
+    }
 
-    // 중복 제거 (동적 컬럼명 지원)
+    // 중복 제거
     const seen = new Set<string>();
     const uniqueTransactions = allTransactions.filter(tx => {
-      // 모든 값을 정렬된 키 순서로 연결하여 고유 키 생성
-      const key = Object.keys(tx)
-        .sort()
-        .map(k => `${k}:${tx[k]}`)
-        .join("|");
+      const key = Object.keys(tx).sort().map(k => `${k}:${tx[k]}`).join("|");
       if (seen.has(key)) return false;
       seen.add(key);
       return true;
     });
 
-    console.log(`Total: ${allTransactions.length} transactions, after dedup: ${uniqueTransactions.length}`);
+    console.log(`Total: ${allTransactions.length}, after dedup: ${uniqueTransactions.length}`);
     return uniqueTransactions;
   } catch (error) {
     console.error("Parallel AI parsing error:", error);
@@ -400,64 +478,141 @@ async function parseWithAIParallel(
   }
 }
 
-// AI 기반 파싱 결과 인터페이스
+// AI 기반 파싱 메인 함수
 interface ParseResult {
   transactions: TransactionRow[];
   tokenUsage: TokenUsage;
   cost: { usd: number; krw: number };
 }
 
-// AI 기반 파싱 (샘플 파싱 → 병렬 전체 파싱)
 async function parseWithAI(text: string): Promise<ParseResult | null> {
   const gemini = getGeminiClient();
-  if (!gemini) {
-    console.log("Gemini API not configured");
-    return null;
-  }
+  if (!gemini) return null;
 
-  // 토큰 사용량 초기화
   resetTokenUsage();
 
   try {
-    const startTime = Date.now();
-
     // 1단계: 샘플 AI 파싱
     const sampleText = text.substring(0, 3000);
-    console.log(`AI parsing: analyzing sample (${sampleText.length} chars)`);
+    console.log(`[1단계] 샘플 AI 파싱 시작`);
 
     const sampleTransactions = await parseSampleTransactions(sampleText);
 
     if (!sampleTransactions || sampleTransactions.length === 0) {
-      console.log("Sample parsing failed, trying full text parsing...");
-      const result = await parseWithAIParallel(text, []);
+      console.log("샘플 파싱 실패, 전체 파싱 시도");
+      const result = await parseFullTextWithAI(text, [], []);
       const cost = calculateCost(totalTokenUsage);
       return result ? { transactions: result, tokenUsage: { ...totalTokenUsage }, cost } : null;
     }
 
-    console.log(`Sample parsing successful: ${sampleTransactions.length} transactions`);
+    // 샘플에서 발견된 컬럼 추출
+    const detectedColumns = new Set<string>();
+    for (const tx of sampleTransactions) {
+      for (const key of Object.keys(tx)) {
+        if (tx[key] !== undefined && tx[key] !== null && tx[key] !== "" && tx[key] !== 0) {
+          detectedColumns.add(key);
+        }
+      }
+    }
 
-    // 2단계: 병렬 전체 파싱
-    console.log("Parsing full text with AI (parallel)...");
-    const allTransactions = await parseWithAIParallel(text, sampleTransactions);
+    // 2단계: AI 병렬 전체 파싱
+    console.log(`[2단계] AI 병렬 파싱 시작`);
+    const allTransactions = await parseFullTextWithAI(text, [...detectedColumns], sampleTransactions);
 
     if (!allTransactions || allTransactions.length === 0) {
-      console.log("Full text parsing failed, returning sample");
       const cost = calculateCost(totalTokenUsage);
       return { transactions: sampleTransactions, tokenUsage: { ...totalTokenUsage }, cost };
     }
 
-    const elapsed = Date.now() - startTime;
     const cost = calculateCost(totalTokenUsage);
-
-    console.log(`AI parsing complete: ${allTransactions.length} transactions in ${elapsed}ms`);
-    console.log(`Token usage: input ${totalTokenUsage.inputTokens}, output ${totalTokenUsage.outputTokens}`);
-    console.log(`Estimated cost: $${cost.usd.toFixed(6)} (~${cost.krw.toFixed(2)} KRW)`);
+    console.log(`=== 파싱 완료: ${allTransactions.length}개 거래, 비용: ${cost.krw.toFixed(0)}원 ===`);
 
     return { transactions: allTransactions, tokenUsage: { ...totalTokenUsage }, cost };
   } catch (error) {
     console.error("AI parsing error:", error);
     return null;
   }
+}
+
+// 금액 컬럼 판별 헬퍼 함수들
+function isAmountColumn(col: string): boolean {
+  const keywords = ["금액", "잔액", "입금", "출금", "맡기신", "찾으신", "받으신", "보내신", "balance", "deposit", "withdrawal"];
+  return keywords.some(kw => col.toLowerCase().includes(kw.toLowerCase()));
+}
+
+function isDepositColumn(col: string): boolean {
+  const keywords = ["입금", "맡기신", "받으신", "deposit"];
+  return keywords.some(kw => col.toLowerCase().includes(kw.toLowerCase()));
+}
+
+function isWithdrawalColumn(col: string): boolean {
+  const keywords = ["출금", "찾으신", "보내신", "withdrawal"];
+  return keywords.some(kw => col.toLowerCase().includes(kw.toLowerCase()));
+}
+
+// Excel 생성 함수
+function createExcelFromTransactions(
+  transactions: TransactionRow[],
+  columns: string[],
+  threshold: number,
+  color: string
+): { workbook: ExcelJS.Workbook; highlightedRows: number } {
+  const workbook = new ExcelJS.Workbook();
+  const worksheet = workbook.addWorksheet("거래내역");
+
+  // 컬럼 설정
+  worksheet.columns = columns.map((col) => ({
+    header: col,
+    key: col,
+    width: isAmountColumn(col) ? 15 : col.includes("일") || col.includes("날짜") ? 15 : 25,
+  }));
+
+  // 헤더 스타일
+  const headerRow = worksheet.getRow(1);
+  headerRow.font = { bold: true };
+  headerRow.fill = {
+    type: "pattern",
+    pattern: "solid",
+    fgColor: { argb: "FFE0E0E0" },
+  };
+
+  // 데이터 추가 및 하이라이트
+  let highlightedRows = 0;
+  for (const tx of transactions) {
+    const rowData: Record<string, unknown> = {};
+    for (const col of columns) {
+      rowData[col] = tx[col] ?? "";
+    }
+    const row = worksheet.addRow(rowData);
+
+    // 기준 금액 이상이면 하이라이트
+    let maxAmount = 0;
+    for (const col of columns) {
+      if ((isDepositColumn(col) || isWithdrawalColumn(col)) && typeof tx[col] === "number") {
+        maxAmount = Math.max(maxAmount, tx[col] as number);
+      }
+    }
+
+    if (maxAmount >= threshold) {
+      row.eachCell((cell) => {
+        cell.fill = {
+          type: "pattern",
+          pattern: "solid",
+          fgColor: { argb: "FF" + color },
+        };
+      });
+      highlightedRows++;
+    }
+
+    // 금액 포맷
+    for (const col of columns) {
+      if (isAmountColumn(col) && typeof tx[col] === "number" && tx[col] > 0) {
+        row.getCell(col).numFmt = "#,##0";
+      }
+    }
+  }
+
+  return { workbook, highlightedRows };
 }
 
 export async function POST(request: NextRequest) {
@@ -478,108 +633,39 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "파일이 없습니다" }, { status: 400 });
     }
 
-    // PDF 읽기
+    // API 클라이언트 확인
+    const visionClient = getVisionClient();
+    const geminiClient = getGeminiClient();
+
+    if (!visionClient) {
+      return NextResponse.json(
+        { error: "OCR 서비스가 설정되지 않았습니다." },
+        { status: 500 }
+      );
+    }
+
+    if (!geminiClient) {
+      return NextResponse.json(
+        { error: "AI 파싱 서비스가 설정되지 않았습니다." },
+        { status: 500 }
+      );
+    }
+
     const arrayBuffer = await file.arrayBuffer();
 
-    // 캐시 확인 (활성화된 경우)
+    // 캐시 확인
     if (isCacheEnabled()) {
       const fileHash = generateFileHash(arrayBuffer);
-      console.log(`Checking cache for file: ${file.name} (hash: ${fileHash})`);
-
       const cached = await getCachedParsing(fileHash);
+
       if (cached) {
         console.log(`Cache HIT for ${file.name}`);
-
-        // 캐시된 결과로 Excel 생성
         const transactions = cached.parsing_result as TransactionRow[];
-        const columns = cached.columns as string[];
+        const columns = cached.columns;
 
-        // Excel 파일 생성
-        const workbook = new ExcelJS.Workbook();
-        const worksheet = workbook.addWorksheet("거래내역");
-
-        // 헤더 설정
-        worksheet.columns = columns.map((col) => ({
-          header: col,
-          key: col,
-          width: col.includes("금액") || col.includes("잔액") || col.includes("입금") || col.includes("출금") ? 15 :
-                 col.includes("일") || col.includes("date") ? 15 : 25,
-        }));
-
-        // 헤더 스타일
-        const headerRow = worksheet.getRow(1);
-        headerRow.font = { bold: true };
-        headerRow.fill = {
-          type: "pattern",
-          pattern: "solid",
-          fgColor: { argb: "FFE0E0E0" },
-        };
-
-        // 금액 컬럼 판별 함수
-        const isAmountColumn = (key: string): boolean => {
-          const amountKeywords = ["금액", "잔액", "입금", "출금", "deposit", "withdrawal", "balance", "amount"];
-          return amountKeywords.some((kw) => key.toLowerCase().includes(kw.toLowerCase()));
-        };
-
-        const isDepositColumn = (key: string): boolean => {
-          const depositKeywords = ["입금", "맡기신", "받으신", "deposit"];
-          return depositKeywords.some((kw) => key.toLowerCase().includes(kw.toLowerCase()));
-        };
-
-        const isWithdrawalColumn = (key: string): boolean => {
-          const withdrawalKeywords = ["출금", "찾으신", "보내신", "withdrawal"];
-          return withdrawalKeywords.some((kw) => key.toLowerCase().includes(kw.toLowerCase()));
-        };
-
-        const isGeneralAmountColumn = (key: string): boolean => {
-          const generalAmountKeywords = ["거래금액"];
-          return generalAmountKeywords.some((kw) => key.toLowerCase().includes(kw.toLowerCase()));
-        };
-
-        // 데이터 추가 및 하이라이트
-        let highlightedRows = 0;
-        for (const tx of transactions) {
-          const rowData: Record<string, unknown> = {};
-          for (const col of columns) {
-            rowData[col] = tx[col] ?? "";
-          }
-          const row = worksheet.addRow(rowData);
-
-          let maxAmount = 0;
-          for (const col of columns) {
-            if (isDepositColumn(col) || isWithdrawalColumn(col) || isGeneralAmountColumn(col)) {
-              const val = typeof tx[col] === "number" ? tx[col] : 0;
-              if (val > maxAmount) maxAmount = val;
-            }
-          }
-
-          if (maxAmount >= threshold) {
-            row.eachCell((cell) => {
-              cell.fill = {
-                type: "pattern",
-                pattern: "solid",
-                fgColor: { argb: "FF" + color },
-              };
-            });
-            highlightedRows++;
-          }
-
-          for (const col of columns) {
-            if (isAmountColumn(col) && typeof tx[col] === "number" && tx[col] > 0) {
-              row.getCell(col).numFmt = "#,##0";
-            }
-          }
-        }
-
-        await logAction(userEmail, "highlight_pdf_cached", {
-          fileName: file.name,
-          fileSize: file.size,
-          threshold: threshold,
-          color: color,
-          totalRows: transactions.length,
-          highlightedRows: highlightedRows,
-          cacheHitCount: cached.hit_count + 1,
-        });
+        const { workbook, highlightedRows } = createExcelFromTransactions(
+          transactions, columns, threshold, color
+        );
 
         const outputBuffer = await workbook.xlsx.writeBuffer();
         const originalName = file.name.replace(/\.[^/.]+$/, "");
@@ -589,50 +675,185 @@ export async function POST(request: NextRequest) {
           headers: {
             "Content-Type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             "Content-Disposition": `attachment; filename*=UTF-8''${encodedFileName}`,
-            "X-Cache-Hit": "true",
-            "X-AI-Cost-Input-Tokens": "0",
-            "X-AI-Cost-Output-Tokens": "0",
-            "X-AI-Cost-USD": "0",
-            "X-AI-Cost-KRW": "0",
           },
         });
       }
-      console.log(`Cache MISS for ${file.name}`);
     }
 
-    const text = extractTextFromPdf(arrayBuffer);
+    // PDF를 처리
+    const isPdf = file.name.toLowerCase().endsWith(".pdf");
+    let fullText = "";
+    let isTextPdf = false;
 
-    if (!text || text.trim().length === 0) {
+    if (isPdf) {
+      const pdfBuffer = Buffer.from(arrayBuffer);
+      const doc = mupdf.Document.openDocument(pdfBuffer, "application/pdf");
+      const pageCount = Math.min(doc.countPages(), 50); // 최대 50페이지
+
+      // 1. 먼저 텍스트 PDF인지 확인 (텍스트 직접 추출 시도)
+      console.log("Checking if PDF has embedded text...");
+      const extractedTexts: string[] = [];
+
+      for (let pageNum = 0; pageNum < pageCount; pageNum++) {
+        try {
+          const page = doc.loadPage(pageNum);
+          const pageText = page.toStructuredText("preserve-whitespace").asText();
+          if (pageText && pageText.trim().length > 0) {
+            extractedTexts.push(pageText);
+          }
+        } catch (err) {
+          console.error(`Text extraction error page ${pageNum + 1}:`, err);
+        }
+      }
+
+      const directText = extractedTexts.join("\n\n");
+
+      // 텍스트가 충분히 있으면 텍스트 PDF로 판단
+      if (directText.length > 500) {
+        console.log(`텍스트 PDF 감지: ${directText.length} chars`);
+        fullText = directText;
+        isTextPdf = true;
+
+        // 텍스트 PDF: 정규식 파싱 우선 시도
+        console.log("정규식 파싱 시도...");
+        const regexResult = parseTextWithRegex(fullText);
+
+        if (regexResult && regexResult.transactions.length >= 3) {
+          console.log(`정규식 파싱 성공: ${regexResult.transactions.length}개 거래`);
+
+          const { transactions, columns } = regexResult;
+
+          // 캐시 저장 (AI 비용 0)
+          if (isCacheEnabled()) {
+            const fileHash = generateFileHash(arrayBuffer);
+            await saveParsing({
+              fileHash,
+              fileName: file.name,
+              fileSize: file.size,
+              parsingResult: transactions as Record<string, unknown>[],
+              columns,
+              tokenUsage: { inputTokens: 0, outputTokens: 0 },
+              aiCost: { usd: 0, krw: 0 },
+              userEmail,
+            });
+          }
+
+          // Excel 생성
+          const { workbook, highlightedRows } = createExcelFromTransactions(
+            transactions, columns, threshold, color
+          );
+
+          // 로그 기록
+          await logAction(userEmail, "highlight_pdf_transactions", {
+            fileName: file.name,
+            fileSize: file.size,
+            threshold,
+            color,
+            totalRows: transactions.length,
+            highlightedRows,
+            columns,
+            parsingMethod: "regex",
+            aiCost: { usd: 0, krw: 0 },
+          });
+
+          // 응답
+          const outputBuffer = await workbook.xlsx.writeBuffer();
+          const originalName = file.name.replace(/\.[^/.]+$/, "");
+          const encodedFileName = encodeURIComponent(`highlighted_${originalName}.xlsx`);
+
+          return new NextResponse(outputBuffer, {
+            headers: {
+              "Content-Type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+              "Content-Disposition": `attachment; filename*=UTF-8''${encodedFileName}`,
+            },
+          });
+        }
+
+        console.log("정규식 파싱 실패, AI 파싱으로 폴백...");
+      } else {
+        // 2. 스캔본 PDF: OCR 필요
+        console.log("스캔본 PDF 감지, OCR 시작...");
+
+        // PDF → 이미지 변환
+        const pageImages: { pageNum: number; base64: string }[] = [];
+        for (let pageNum = 0; pageNum < pageCount; pageNum++) {
+          try {
+            const page = doc.loadPage(pageNum);
+            const scale = 2.0; // 150 DPI
+            const pixmap = page.toPixmap(
+              mupdf.Matrix.scale(scale, scale),
+              mupdf.ColorSpace.DeviceRGB,
+              false,
+              true
+            );
+            const pngData = pixmap.asPNG();
+            pageImages.push({ pageNum, base64: Buffer.from(pngData).toString("base64") });
+          } catch (pageError) {
+            console.error(`Error converting page ${pageNum + 1}:`, pageError);
+          }
+        }
+
+        // Vision OCR 병렬 호출 (10개씩 배치)
+        const allTexts: string[] = new Array(pageCount).fill("");
+        const batchSize = 10;
+
+        for (let batchStart = 0; batchStart < pageImages.length; batchStart += batchSize) {
+          const batch = pageImages.slice(batchStart, batchStart + batchSize);
+          await Promise.all(
+            batch.map(async ({ pageNum, base64 }) => {
+              try {
+                const [result] = await visionClient.textDetection({
+                  image: { content: base64 },
+                  imageContext: { languageHints: ["ko", "en"] },
+                });
+                const pageText = result.fullTextAnnotation?.text || "";
+                if (pageText) {
+                  allTexts[pageNum] = pageText;
+                  console.log(`Page ${pageNum + 1}: ${pageText.length} chars`);
+                }
+              } catch (err) {
+                console.error(`OCR error page ${pageNum + 1}:`, err);
+              }
+            })
+          );
+        }
+
+        fullText = allTexts.filter(t => t).join("\n\n");
+      }
+    } else {
+      // 이미지 파일 OCR
+      const base64Content = Buffer.from(arrayBuffer).toString("base64");
+      const [result] = await visionClient.textDetection({
+        image: { content: base64Content },
+        imageContext: { languageHints: ["ko", "en"] },
+      });
+      fullText = result.fullTextAnnotation?.text || "";
+    }
+
+    if (!fullText) {
       return NextResponse.json(
-        { error: "PDF에서 텍스트를 추출할 수 없습니다. 스캔/이미지 PDF인 경우 OCR 모드를 사용해주세요." },
+        { error: "텍스트를 추출할 수 없습니다. 파일을 확인해주세요." },
         { status: 400 }
       );
     }
 
-    console.log(`PDF text extracted: ${text.length} chars`);
+    console.log(`텍스트 추출 완료: ${fullText.length} chars (isTextPdf: ${isTextPdf})`);
 
-    // AI 파싱 (전용)
-    const parseResult = await parseWithAI(text);
+    // AI 파싱 (스캔본 PDF 또는 정규식 파싱 실패 시)
+    const parseResult = await parseWithAI(fullText);
 
     if (!parseResult || parseResult.transactions.length === 0) {
       return NextResponse.json(
-        { error: "거래내역을 파싱할 수 없습니다. AI가 텍스트에서 거래 패턴을 인식하지 못했습니다." },
+        { error: "거래내역을 파싱할 수 없습니다." },
         { status: 400 }
       );
     }
 
     const { transactions, tokenUsage, cost } = parseResult;
-    console.log(`AI parsing successful: ${transactions.length} transactions`);
 
-    // Excel 파일 생성
-    const workbook = new ExcelJS.Workbook();
-    const worksheet = workbook.addWorksheet("거래내역");
-
-    // 동적 컬럼 추출 (첫 번째 거래의 컬럼 순서 그대로 유지)
+    // 컬럼 추출
     const columns: string[] = [];
     const seenColumns = new Set<string>();
-
-    // 첫 번째 거래에서 모든 컬럼을 순서대로 추출 (값에 상관없이)
     if (transactions.length > 0) {
       for (const key of Object.keys(transactions[0])) {
         if (!seenColumns.has(key)) {
@@ -642,96 +863,7 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    // 나머지 거래에서 추가 컬럼 확인 (혹시 첫 번째에 없는 컬럼이 있을 경우)
-    const sampleSize = Math.min(5, transactions.length);
-    for (let i = 1; i < sampleSize; i++) {
-      for (const key of Object.keys(transactions[i])) {
-        if (!seenColumns.has(key)) {
-          columns.push(key);
-          seenColumns.add(key);
-        }
-      }
-    }
-
-    // 헤더 설정 (컬럼명 그대로 사용)
-    worksheet.columns = columns.map((col) => ({
-      header: col,
-      key: col,
-      width: col.includes("금액") || col.includes("잔액") || col.includes("입금") || col.includes("출금") ? 15 :
-             col.includes("일") || col.includes("date") ? 15 : 25,
-    }));
-
-    // 헤더 스타일
-    const headerRow = worksheet.getRow(1);
-    headerRow.font = { bold: true };
-    headerRow.fill = {
-      type: "pattern",
-      pattern: "solid",
-      fgColor: { argb: "FFE0E0E0" },
-    };
-
-    // 금액 컬럼 판별 함수
-    const isAmountColumn = (key: string): boolean => {
-      const amountKeywords = ["금액", "잔액", "입금", "출금", "deposit", "withdrawal", "balance", "amount"];
-      return amountKeywords.some((kw) => key.toLowerCase().includes(kw.toLowerCase()));
-    };
-
-    // 입금성 컬럼 판별
-    const isDepositColumn = (key: string): boolean => {
-      const depositKeywords = ["입금", "맡기신", "받으신", "deposit"];
-      return depositKeywords.some((kw) => key.toLowerCase().includes(kw.toLowerCase()));
-    };
-
-    // 출금성 컬럼 판별
-    const isWithdrawalColumn = (key: string): boolean => {
-      const withdrawalKeywords = ["출금", "찾으신", "보내신", "withdrawal"];
-      return withdrawalKeywords.some((kw) => key.toLowerCase().includes(kw.toLowerCase()));
-    };
-
-    // 일반 금액 컬럼 판별 (거래금액 등)
-    const isGeneralAmountColumn = (key: string): boolean => {
-      const generalAmountKeywords = ["거래금액"];
-      return generalAmountKeywords.some((kw) => key.toLowerCase().includes(kw.toLowerCase()));
-    };
-
-    // 데이터 추가 및 하이라이트
-    let highlightedRows = 0;
-    for (const tx of transactions) {
-      const rowData: Record<string, unknown> = {};
-      for (const col of columns) {
-        rowData[col] = tx[col] ?? "";
-      }
-      const row = worksheet.addRow(rowData);
-
-      // 기준 금액 이상이면 하이라이트 (입금/출금/거래금액 컬럼에서 최대값 찾기)
-      let maxAmount = 0;
-      for (const col of columns) {
-        if (isDepositColumn(col) || isWithdrawalColumn(col) || isGeneralAmountColumn(col)) {
-          const val = typeof tx[col] === "number" ? tx[col] : 0;
-          if (val > maxAmount) maxAmount = val;
-        }
-      }
-
-      if (maxAmount >= threshold) {
-        row.eachCell((cell) => {
-          cell.fill = {
-            type: "pattern",
-            pattern: "solid",
-            fgColor: { argb: "FF" + color },
-          };
-        });
-        highlightedRows++;
-      }
-
-      // 금액 컬럼 포맷
-      for (const col of columns) {
-        if (isAmountColumn(col) && typeof tx[col] === "number" && tx[col] > 0) {
-          row.getCell(col).numFmt = "#,##0";
-        }
-      }
-    }
-
-    // 캐시 저장 (활성화된 경우)
+    // 캐시 저장
     if (isCacheEnabled()) {
       const fileHash = generateFileHash(arrayBuffer);
       await saveParsing({
@@ -744,56 +876,45 @@ export async function POST(request: NextRequest) {
         aiCost: { ...cost },
         userEmail,
       });
-      console.log(`Cached parsing result for ${file.name}`);
     }
 
-    // 작업 로그 기록
+    // Excel 생성
+    const { workbook, highlightedRows } = createExcelFromTransactions(
+      transactions, columns, threshold, color
+    );
+
+    // 로그 기록
     await logAction(userEmail, "highlight_pdf_transactions", {
       fileName: file.name,
       fileSize: file.size,
-      threshold: threshold,
-      color: color,
+      threshold,
+      color,
       totalRows: transactions.length,
-      highlightedRows: highlightedRows,
+      highlightedRows,
+      columns,
       aiCost: cost,
-      tokenUsage: tokenUsage,
     });
 
-    // 결과 파일 생성
+    // 응답
     const outputBuffer = await workbook.xlsx.writeBuffer();
-
     const originalName = file.name.replace(/\.[^/.]+$/, "");
     const encodedFileName = encodeURIComponent(`highlighted_${originalName}.xlsx`);
+
     return new NextResponse(outputBuffer, {
       headers: {
-        "Content-Type":
-          "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "Content-Type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         "Content-Disposition": `attachment; filename*=UTF-8''${encodedFileName}`,
-        "X-AI-Cost-Input-Tokens": String(tokenUsage.inputTokens),
-        "X-AI-Cost-Output-Tokens": String(tokenUsage.outputTokens),
-        "X-AI-Cost-USD": cost.usd.toFixed(6),
-        "X-AI-Cost-KRW": cost.krw.toFixed(2),
       },
     });
   } catch (error) {
     console.error("PDF Highlight error:", error);
 
-    const errorMessage = error instanceof Error ? error.message : "Unknown error";
-
     await logAction(userEmail, "highlight_pdf_error", {
-      error: errorMessage,
+      error: error instanceof Error ? error.message : "Unknown error",
     });
 
-    // 암호 보호된 PDF 감지
-    if (errorMessage.toLowerCase().includes("password") || errorMessage.includes("encrypted")) {
-      return NextResponse.json(
-        { error: "암호로 보호된 PDF입니다. 암호를 해제한 후 다시 시도해주세요." },
-        { status: 400 }
-      );
-    }
-
     return NextResponse.json(
-      { error: errorMessage || "PDF 처리 중 오류 발생" },
+      { error: error instanceof Error ? error.message : "PDF 처리 중 오류 발생" },
       { status: 500 }
     );
   }
