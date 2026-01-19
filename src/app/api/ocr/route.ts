@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { ImageAnnotatorClient } from "@google-cloud/vision";
+import { GoogleAuth } from "google-auth-library";
 import { logAction } from "@/lib/supabase";
 import { generateFileHash, getCachedParsing, saveParsing, isCacheEnabled, deleteCachedParsing } from "@/lib/cache";
 import * as mupdf from "mupdf";
@@ -36,13 +37,17 @@ function getVisionClient(): ImageAnnotatorClient | null {
     console.log("Client email:", clientEmail);
     console.log("Private key has newlines:", privateKey.includes('\n'));
 
-    return new ImageAnnotatorClient({
-      projectId,
+    // GoogleAuth를 사용하여 명시적으로 인증 객체 생성
+    const auth = new GoogleAuth({
       credentials: {
         client_email: clientEmail,
         private_key: privateKey,
       },
+      projectId,
+      scopes: ['https://www.googleapis.com/auth/cloud-vision'],
     });
+
+    return new ImageAnnotatorClient({ auth });
   }
 
   // 방법 2: JSON 환경변수 (fallback)
@@ -81,13 +86,16 @@ function getVisionClient(): ImageAnnotatorClient | null {
     console.log("Creating Vision client with project:", credentials.project_id);
     console.log("Client email:", credentials.client_email);
 
-    return new ImageAnnotatorClient({
-      projectId: credentials.project_id,
+    const auth = new GoogleAuth({
       credentials: {
         client_email: credentials.client_email,
         private_key: pk,
       },
+      projectId: credentials.project_id,
+      scopes: ['https://www.googleapis.com/auth/cloud-vision'],
     });
+
+    return new ImageAnnotatorClient({ auth });
   } catch (error) {
     console.error("Failed to parse Google Cloud credentials:", error);
     return null;
