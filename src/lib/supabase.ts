@@ -1,9 +1,21 @@
-import { createClient } from "@supabase/supabase-js";
+import { createClient, SupabaseClient } from "@supabase/supabase-js";
 
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
-const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
+let supabase: SupabaseClient | null = null;
 
-export const supabase = createClient(supabaseUrl, supabaseKey);
+function getSupabase(): SupabaseClient | null {
+  if (supabase) return supabase;
+
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+
+  if (!supabaseUrl || !supabaseKey) {
+    console.warn("Supabase credentials not configured");
+    return null;
+  }
+
+  supabase = createClient(supabaseUrl, supabaseKey);
+  return supabase;
+}
 
 // 한국 표준시 (KST) 타임스탬프 생성
 export function getKSTTimestamp(): string {
@@ -20,7 +32,13 @@ export async function logAction(
   details: Record<string, unknown> = {}
 ) {
   try {
-    const { error } = await supabase.from("activity_logs").insert({
+    const client = getSupabase();
+    if (!client) {
+      console.log("Supabase not configured, skipping log");
+      return;
+    }
+
+    const { error } = await client.from("activity_logs").insert({
       user_email: userEmail,
       action: action,
       details: details,

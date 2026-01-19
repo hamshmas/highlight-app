@@ -29,7 +29,7 @@ export default function Home() {
     e.preventDefault();
     setDragOver(false);
     const droppedFiles = Array.from(e.dataTransfer.files).filter((f) =>
-      /\.(xlsx|xls|csv)$/i.test(f.name)
+      /\.(xlsx|xls|csv|pdf)$/i.test(f.name)
     );
     setFiles((prev) => [...prev, ...droppedFiles]);
   }, []);
@@ -78,7 +78,11 @@ export default function Home() {
       formData.append("color", color);
 
       try {
-        const res = await fetch("/api/highlight", {
+        // PDF와 Excel 파일에 따라 다른 API 사용
+        const isPdf = file.name.toLowerCase().endsWith(".pdf");
+        const apiUrl = isPdf ? "/api/highlight-pdf" : "/api/highlight";
+
+        const res = await fetch(apiUrl, {
           method: "POST",
           body: formData,
         });
@@ -140,7 +144,7 @@ export default function Home() {
             거래내역 하이라이트
           </h1>
           <p className="text-gray-600 mb-6">
-            엑셀 거래내역에서 기준 금액 이상 거래를 하이라이트합니다.
+            엑셀/PDF 거래내역에서 기준 금액 이상 거래를 하이라이트합니다.
           </p>
           <p className="text-sm text-gray-500 mb-6">
             sjinlaw.com 도메인 계정으로 로그인하세요.
@@ -226,7 +230,7 @@ export default function Home() {
             <input
               id="fileInput"
               type="file"
-              accept=".xlsx,.xls,.csv"
+              accept=".xlsx,.xls,.csv,.pdf"
               multiple
               className="hidden"
               onChange={handleFileChange}
@@ -235,7 +239,10 @@ export default function Home() {
               파일을 끌어다 놓거나 클릭하세요
             </p>
             <p className="text-sm text-gray-400">
-              지원 형식: .xlsx, .xls, .csv
+              지원 형식: .xlsx, .xls, .csv, .pdf
+            </p>
+            <p className="text-xs text-gray-400 mt-1">
+              (PDF는 텍스트 기반만 지원, 스캔본 불가)
             </p>
           </div>
 
