@@ -63,9 +63,6 @@ export default function Home() {
   // 캐시 무시 옵션
   const [forceRefresh, setForceRefresh] = useState(false);
 
-  // 파싱 모드 선택 (ocr: Vision+Gemini, document-ai: Document AI)
-  const [parsingMode, setParsingMode] = useState<"ocr" | "document-ai">("ocr");
-
   // 처리 시간 카운터
   const [elapsedTime, setElapsedTime] = useState(0);
   const timerRef = useRef<NodeJS.Timeout | null>(null);
@@ -138,8 +135,7 @@ export default function Home() {
         setIsAiParsing(true);
       }, 3000);
 
-      const apiEndpoint = parsingMode === "document-ai" ? "/api/document-ai" : "/api/ocr";
-      const res = await fetch(apiEndpoint, {
+      const res = await fetch("/api/ocr", {
         method: "POST",
         body: formData,
         signal: abortControllerRef.current.signal,
@@ -770,41 +766,6 @@ export default function Home() {
           </p>
         </div>
 
-        {/* 파싱 모드 선택 */}
-        <div className="bg-white rounded-lg shadow-md p-6 mb-6">
-          <h3 className="text-sm font-bold text-black mb-3">파싱 모드</h3>
-          <div className="flex gap-4">
-            <label className="flex items-center gap-2 cursor-pointer">
-              <input
-                type="radio"
-                name="parsingMode"
-                value="ocr"
-                checked={parsingMode === "ocr"}
-                onChange={() => setParsingMode("ocr")}
-                className="w-4 h-4 text-blue-600"
-              />
-              <div>
-                <span className="text-sm font-medium text-gray-700">Vision + Gemini AI</span>
-                <p className="text-xs text-gray-500">OCR 후 AI 파싱 (유연함, 비용 발생)</p>
-              </div>
-            </label>
-            <label className="flex items-center gap-2 cursor-pointer">
-              <input
-                type="radio"
-                name="parsingMode"
-                value="document-ai"
-                checked={parsingMode === "document-ai"}
-                onChange={() => setParsingMode("document-ai")}
-                className="w-4 h-4 text-blue-600"
-              />
-              <div>
-                <span className="text-sm font-medium text-gray-700">Document AI</span>
-                <p className="text-xs text-gray-500">테이블 직접 추출 (빠름, 저렴)</p>
-              </div>
-            </label>
-          </div>
-        </div>
-
         {/* 실행 버튼 */}
         <button
           onClick={handleSubmit}
@@ -816,14 +777,10 @@ export default function Home() {
           }`}
         >
           {ocrStep === "extracting"
-            ? parsingMode === "document-ai"
-              ? `Document AI 처리 중... (${elapsedTime}초)`
-              : isAiParsing
-                ? `AI 파싱 중... (${elapsedTime}초)`
-                : `OCR 처리 중... (${elapsedTime}초)`
-            : parsingMode === "document-ai"
-              ? "Document AI 추출 시작"
-              : "OCR 추출 시작"}
+            ? isAiParsing
+              ? `AI 파싱 중... (${elapsedTime}초)`
+              : `OCR 처리 중... (${elapsedTime}초)`
+            : "OCR 추출 시작"}
         </button>
 
         {/* 결과 메시지 */}
@@ -849,11 +806,7 @@ export default function Home() {
                   <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
                 </svg>
                 <span className="font-medium">
-                  {parsingMode === "document-ai"
-                    ? "Document AI 처리 중..."
-                    : isAiParsing
-                      ? "AI 파싱 중..."
-                      : "OCR 텍스트 추출 중..."}
+                  {isAiParsing ? "AI 파싱 중..." : "OCR 텍스트 추출 중..."}
                 </span>
                 <span className="text-sm">({elapsedTime}초)</span>
               </div>
@@ -864,11 +817,7 @@ export default function Home() {
                 중단
               </button>
             </div>
-            {parsingMode === "document-ai" ? (
-              <div className="mt-3 ml-7">
-                <p className="text-sm">Document AI가 테이블을 추출하고 있습니다.</p>
-              </div>
-            ) : isAiParsing && (
+            {isAiParsing && (
               <div className="mt-3 ml-7">
                 <p className="text-sm">Gemini AI가 거래내역을 분석하고 있습니다. 파일 크기에 따라 1~3분 정도 소요될 수 있습니다.</p>
               </div>
