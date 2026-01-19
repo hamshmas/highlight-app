@@ -118,3 +118,30 @@ export async function saveParsing(params: {
 export function isCacheEnabled(): boolean {
   return process.env.ENABLE_PARSING_CACHE !== "false";
 }
+
+// 캐시 삭제 (파일 해시로)
+export async function deleteCachedParsing(fileHash: string): Promise<boolean> {
+  const client = getSupabase();
+  if (!client) {
+    console.log("Supabase not configured, skipping cache delete");
+    return false;
+  }
+
+  try {
+    const { error } = await client
+      .from("parsing_cache")
+      .delete()
+      .eq("file_hash", fileHash);
+
+    if (error) {
+      console.error("Cache delete error:", error);
+      return false;
+    }
+
+    console.log(`Deleted cache for hash: ${fileHash}`);
+    return true;
+  } catch (err) {
+    console.error("Failed to delete cache:", err);
+    return false;
+  }
+}
