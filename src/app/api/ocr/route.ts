@@ -8,6 +8,10 @@ import * as mupdf from "mupdf";
 import { GoogleGenerativeAI } from "@google/generative-ai";
 import { parseWithBankRule } from "@/lib/bank-rules";
 
+// Route Segment Config
+export const maxDuration = 300; // 5분 타임아웃
+export const dynamic = 'force-dynamic';
+
 interface TransactionRow {
   date: string;
   description: string;
