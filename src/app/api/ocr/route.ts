@@ -19,25 +19,68 @@ interface TransactionRow {
 
 // Google Cloud Vision 클라이언트 초기화
 function getVisionClient(): ImageAnnotatorClient | null {
-  let credentialsJson = process.env.GOOGLE_CLOUD_CREDENTIALS;
+  // Base64 인코딩된 환경 변수 우선 확인
+  let credentialsJson = process.env.GOOGLE_CLOUD_CREDENTIALS_BASE64
+    ? Buffer.from(process.env.GOOGLE_CLOUD_CREDENTIALS_BASE64, 'base64').toString('utf-8')
+    : process.env.GOOGLE_CLOUD_CREDENTIALS;
+
   if (!credentialsJson) {
     console.warn("Google Cloud credentials not configured");
     return null;
   }
 
   try {
-    // .env 파일에서 실제 줄바꿈이 들어간 경우 이를 \n 문자열로 변환
-    credentialsJson = credentialsJson.replace(/\n/g, '\\n');
-
-    // Vercel에서 가져온 JSON이 이스케이프된 형태일 수 있음
-    if (credentialsJson.startsWith('"') && credentialsJson.endsWith('"')) {
-      credentialsJson = credentialsJson.slice(1, -1);
+    // JSON 파싱 시도
+    let credentials;
+    try {
+      credentials = JSON.parse(credentialsJson);
+    } catch (parseError) {
+      // Vercel에서 이중 인코딩될 수 있음
+      console.log("First JSON parse failed, trying to unescape...");
+      const unescaped = credentialsJson.replace(/\\"/g, '"').replace(/\\\\/g, '\\');
+      credentials = JSON.parse(unescaped);
     }
 
-    const credentials = JSON.parse(credentialsJson);
+    // private_key가 있는지 확인
+    if (!credentials.private_key) {
+      console.error("Google Cloud credentials missing private_key");
+      return null;
+    }
+
+    // private_key 형식 정규화 (다양한 인코딩 케이스 처리)
+    let privateKey = credentials.private_key;
+
+    // 1. 리터럴 \\n을 실제 줄바꿈으로 변환
+    if (privateKey.includes('\\n')) {
+      privateKey = privateKey.replace(/\\n/g, '\n');
+    }
+
+    // 2. 줄바꿈이 전혀 없는 경우 (한 줄로 된 키) - BEGIN/END 마커 사이에 줄바꿈 추가
+    if (!privateKey.includes('\n')) {
+      privateKey = privateKey
+        .replace('-----BEGIN PRIVATE KEY-----', '-----BEGIN PRIVATE KEY-----\n')
+        .replace('-----END PRIVATE KEY-----', '\n-----END PRIVATE KEY-----\n');
+    }
+
+    // 3. 마지막에 줄바꿈이 없으면 추가
+    if (!privateKey.endsWith('\n')) {
+      privateKey = privateKey + '\n';
+    }
+
+    credentials.private_key = privateKey;
+
+    console.log("Creating Vision client with project:", credentials.project_id);
+    console.log("Client email:", credentials.client_email);
+    console.log("Private key starts with:", privateKey.substring(0, 50));
+    console.log("Private key ends with:", privateKey.substring(privateKey.length - 50));
+    console.log("Private key has newlines:", privateKey.includes('\n'));
+    console.log("Private key length:", privateKey.length);
+
     return new ImageAnnotatorClient({ credentials });
   } catch (error) {
     console.error("Failed to parse Google Cloud credentials:", error);
+    console.error("Credentials length:", credentialsJson.length);
+    console.error("Credentials preview:", credentialsJson.substring(0, 100));
     return null;
   }
 }
@@ -798,13 +841,29 @@ export async function POST(request: NextRequest) {
     });
   } catch (error) {
     console.error("OCR error:", error);
+    console.error("OCR error stack:", error instanceof Error ? error.stack : "No stack");
 
     await logAction(userEmail, "ocr_error", {
       error: error instanceof Error ? error.message : "Unknown error",
+      stack: error instanceof Error ? error.stack : undefined,
     });
 
+    // 더 구체적인 에러 메시지 제공
+    let errorMessage = "OCR 처리 중 오류 발생";
+    if (error instanceof Error) {
+      if (error.message.includes("pattern")) {
+        errorMessage = "Google Cloud 인증 설정 오류입니다. 환경 변수를 확인해주세요.";
+      } else if (error.message.includes("PERMISSION_DENIED")) {
+        errorMessage = "Google Cloud Vision API 권한이 없습니다.";
+      } else if (error.message.includes("UNAUTHENTICATED")) {
+        errorMessage = "Google Cloud 인증에 실패했습니다.";
+      } else {
+        errorMessage = error.message;
+      }
+    }
+
     return NextResponse.json(
-      { error: error instanceof Error ? error.message : "OCR 처리 중 오류 발생" },
+      { error: errorMessage },
       { status: 500 }
     );
   }
