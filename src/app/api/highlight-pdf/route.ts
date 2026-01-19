@@ -149,7 +149,9 @@ function parseTransactions(text: string): TransactionRow[] {
 
 // PDF에서 텍스트 추출
 async function extractTextFromPdf(buffer: ArrayBuffer): Promise<string> {
-  const { text } = await extractText(buffer, { mergePages: true });
+  // Uint8Array로 변환하여 전달
+  const uint8Array = new Uint8Array(buffer);
+  const { text } = await extractText(uint8Array, { mergePages: true });
   return text;
 }
 
