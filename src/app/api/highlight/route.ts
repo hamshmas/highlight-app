@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import ExcelJS from "exceljs";
+import { logAction } from "@/lib/supabase";
 
 export async function POST(request: NextRequest) {
   // 인증 확인
@@ -8,6 +9,8 @@ export async function POST(request: NextRequest) {
   if (!session) {
     return NextResponse.json({ error: "로그인이 필요합니다" }, { status: 401 });
   }
+
+  const userEmail = session.user?.email || "unknown";
 
   try {
     const formData = await request.formData();
@@ -86,6 +89,7 @@ export async function POST(request: NextRequest) {
     }
 
     // 하이라이트 처리
+    let highlightedRows = 0;
     for (let r = headerRow + 1; r <= worksheet.rowCount; r++) {
       const row = worksheet.getRow(r);
       let shouldHighlight = false;
@@ -108,8 +112,19 @@ export async function POST(request: NextRequest) {
             fgColor: { argb: "FF" + color },
           };
         });
+        highlightedRows++;
       }
     }
+
+    // 작업 로그 기록 (Supabase)
+    await logAction(userEmail, "highlight_transactions", {
+      fileName: file.name,
+      fileSize: file.size,
+      threshold: threshold,
+      color: color,
+      totalRows: worksheet.rowCount,
+      highlightedRows: highlightedRows,
+    });
 
     // 결과 파일 생성
     const outputBuffer = await workbook.xlsx.writeBuffer();
@@ -125,6 +140,12 @@ export async function POST(request: NextRequest) {
     });
   } catch (error) {
     console.error("Highlight error:", error);
+
+    // 에러도 로그 기록
+    await logAction(userEmail, "highlight_error", {
+      error: error instanceof Error ? error.message : "Unknown error",
+    });
+
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "처리 중 오류 발생" },
       { status: 500 }
