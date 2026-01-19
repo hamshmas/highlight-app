@@ -1,7 +1,15 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import ExcelJS from "exceljs";
+import * as XLSX from "xlsx";
 import { logAction } from "@/lib/supabase";
+
+// .xls 파일을 .xlsx 형식으로 변환
+async function convertXlsToXlsx(arrayBuffer: ArrayBuffer): Promise<ArrayBuffer> {
+  const xlsWorkbook = XLSX.read(arrayBuffer, { type: "array" });
+  const xlsxBuffer = XLSX.write(xlsWorkbook, { type: "array", bookType: "xlsx" });
+  return xlsxBuffer;
+}
 
 export async function POST(request: NextRequest) {
   // 인증 확인
@@ -23,10 +31,26 @@ export async function POST(request: NextRequest) {
     }
 
     // 파일 읽기
-    const arrayBuffer = await file.arrayBuffer();
+    let arrayBuffer = await file.arrayBuffer();
+
+    // 파일 확장자 확인 및 변환
+    const fileName = file.name.toLowerCase();
+    const isXls = fileName.endsWith(".xls") && !fileName.endsWith(".xlsx");
+
+    if (isXls) {
+      // .xls 파일을 .xlsx로 변환
+      arrayBuffer = await convertXlsToXlsx(arrayBuffer);
+    }
 
     const workbook = new ExcelJS.Workbook();
-    await workbook.xlsx.load(arrayBuffer);
+
+    try {
+      await workbook.xlsx.load(arrayBuffer);
+    } catch {
+      // xlsx 로드 실패 시 xls로 시도
+      const convertedBuffer = await convertXlsToXlsx(arrayBuffer);
+      await workbook.xlsx.load(convertedBuffer);
+    }
 
     const worksheet = workbook.worksheets[0];
     if (!worksheet) {
@@ -131,23 +155,42 @@ export async function POST(request: NextRequest) {
 
     // 응답 반환
     const originalName = file.name.replace(/\.[^/.]+$/, "");
+    const encodedFileName = encodeURIComponent(`highlighted_${originalName}.xlsx`);
     return new NextResponse(outputBuffer, {
       headers: {
         "Content-Type":
           "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        "Content-Disposition": `attachment; filename="highlighted_${originalName}.xlsx"`,
+        "Content-Disposition": `attachment; filename*=UTF-8''${encodedFileName}`,
       },
     });
   } catch (error) {
     console.error("Highlight error:", error);
 
+    const errorMessage = error instanceof Error ? error.message : "Unknown error";
+
     // 에러도 로그 기록
     await logAction(userEmail, "highlight_error", {
-      error: error instanceof Error ? error.message : "Unknown error",
+      error: errorMessage,
     });
 
+    // 암호 보호된 Excel 감지 (더 구체적인 조건)
+    const lowerMessage = errorMessage.toLowerCase();
+    if (
+      lowerMessage.includes("password") ||
+      lowerMessage.includes("encrypted") ||
+      (lowerMessage.includes("ecma-376") && lowerMessage.includes("encrypt"))
+    ) {
+      return NextResponse.json(
+        {
+          error: "암호로 보호된 Excel 파일입니다. 암호를 해제한 후 다시 시도해주세요.",
+          isPasswordProtected: true,
+        },
+        { status: 400 }
+      );
+    }
+
     return NextResponse.json(
-      { error: error instanceof Error ? error.message : "처리 중 오류 발생" },
+      { error: errorMessage || "처리 중 오류 발생" },
       { status: 500 }
     );
   }
