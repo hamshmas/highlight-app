@@ -19,7 +19,13 @@ export async function GET() {
   };
 
   // Vision API 테스트
-  let visionTest = { success: false, error: "" };
+  let visionTest: {
+    success: boolean;
+    error: string;
+    message?: string;
+    hasAnnotations?: boolean;
+    stage?: string;
+  } = { success: false, error: "" };
 
   if (projectId && clientEmail && privateKey) {
     try {
