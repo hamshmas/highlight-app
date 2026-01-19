@@ -12,82 +12,135 @@ interface TransactionRow {
   balance: number;
 }
 
-// 날짜 패턴 (다양한 형식 지원)
-const DATE_PATTERNS = [
-  /(\d{4})[.\-\/](\d{1,2})[.\-\/](\d{1,2})/,  // 2024.01.15, 2024-01-15
-  /(\d{2})[.\-\/](\d{1,2})[.\-\/](\d{1,2})/,  // 24.01.15
-  /(\d{4})년\s*(\d{1,2})월\s*(\d{1,2})일/,    // 2024년 1월 15일
-];
-
-// 금액 파싱
-function parseAmount(str: string): number {
-  if (!str) return 0;
-  const cleaned = str.replace(/[,\s원₩]/g, "").trim();
-  if (!cleaned || cleaned === "-" || cleaned === "") return 0;
+// 금액 파싱 (음수 포함)
+function parseAmount(str: string): { value: number; isNegative: boolean } {
+  if (!str) return { value: 0, isNegative: false };
+  const isNegative = str.includes("-");
+  const cleaned = str.replace(/[,\s원₩\-]/g, "").trim();
+  if (!cleaned || cleaned === "") return { value: 0, isNegative: false };
   const num = parseFloat(cleaned);
-  return isNaN(num) ? 0 : Math.abs(num);
+  return isNaN(num) ? { value: 0, isNegative: false } : { value: Math.abs(num), isNegative };
 }
 
-// 날짜 추출
-function extractDate(text: string): string | null {
-  for (const pattern of DATE_PATTERNS) {
-    const match = text.match(pattern);
-    if (match) {
-      return match[0];
-    }
-  }
-  return null;
-}
-
-// PDF 텍스트에서 거래내역 추출
+// PDF 텍스트에서 거래내역 추출 (카카오뱅크/케이뱅크 형식)
 function parseTransactions(text: string): TransactionRow[] {
-  const lines = text.split("\n").map(l => l.trim()).filter(l => l.length > 0);
   const transactions: TransactionRow[] = [];
 
-  // 금액 패턴 (콤마 포함 숫자)
-  const amountPattern = /[\d,]+(?:\.\d+)?/g;
+  // 카카오뱅크 형식: 2024.10.30 10:15:15 출금 -1,300 503,426 ...
+  // 날짜 + 시간 + 구분 + 금액 + 잔액 + 내용 패턴
+  const kakaoPattern = /(\d{4}\.\d{2}\.\d{2})\s+(\d{2}:\d{2}:\d{2})\s+(입금|출금)\s+([\-\d,]+)\s+([\d,]+)\s+(.+?)(?=\d{4}\.\d{2}\.\d{2}|$)/g;
 
-  for (const line of lines) {
-    const date = extractDate(line);
-    if (!date) continue;
+  let match;
+  while ((match = kakaoPattern.exec(text)) !== null) {
+    const date = match[1];
+    const type = match[3];
+    const amountStr = match[4];
+    const balanceStr = match[5];
+    const description = match[6].trim();
 
-    // 금액들 추출
-    const amounts = line.match(amountPattern) || [];
-    const parsedAmounts = amounts.map(a => parseAmount(a)).filter(a => a > 0);
+    const amount = parseAmount(amountStr);
+    const balance = parseAmount(balanceStr);
 
-    if (parsedAmounts.length === 0) continue;
-
-    // 거래 내역으로 판단되는 행
     const transaction: TransactionRow = {
       date: date,
-      description: line.replace(date, "").trim(),
-      deposit: 0,
-      withdrawal: 0,
-      balance: 0,
+      description: description.split(/\s{2,}/)[0] || description, // 첫 번째 부분만
+      deposit: type === "입금" ? amount.value : 0,
+      withdrawal: type === "출금" ? amount.value : 0,
+      balance: balance.value,
     };
 
-    // 금액 할당 (휴리스틱: 마지막이 잔액, 그 전이 입출금)
-    if (parsedAmounts.length >= 3) {
-      transaction.balance = parsedAmounts[parsedAmounts.length - 1];
-      // 입금/출금 구분은 텍스트 키워드로
-      if (line.includes("입금") || line.includes("받으신") || line.includes("맡기신")) {
-        transaction.deposit = parsedAmounts[parsedAmounts.length - 2];
-      } else if (line.includes("출금") || line.includes("찾으신") || line.includes("보내신") || line.includes("이체")) {
-        transaction.withdrawal = parsedAmounts[parsedAmounts.length - 2];
-      } else {
-        // 기본적으로 두 번째를 출금으로 처리
-        transaction.withdrawal = parsedAmounts[parsedAmounts.length - 2];
-      }
-    } else if (parsedAmounts.length === 2) {
-      transaction.balance = parsedAmounts[1];
-      transaction.withdrawal = parsedAmounts[0];
-    } else if (parsedAmounts.length === 1) {
-      transaction.withdrawal = parsedAmounts[0];
-    }
-
-    // 유효한 거래만 추가
     if (transaction.deposit > 0 || transaction.withdrawal > 0) {
       transactions.push(transaction);
+    }
+  }
+
+  // 카카오뱅크 패턴으로 찾지 못한 경우, 더 유연한 패턴 시도
+  if (transactions.length === 0) {
+    // 케이뱅크 및 기타 형식
+    // 날짜 패턴: 2024. 10.26 또는 2024.10.26
+    const datePattern = /(\d{4})\.\s*(\d{1,2})\.(\d{1,2})/g;
+    const dates: { date: string; index: number }[] = [];
+
+    let dateMatch;
+    while ((dateMatch = datePattern.exec(text)) !== null) {
+      const year = dateMatch[1];
+      const month = dateMatch[2].padStart(2, "0");
+      const day = dateMatch[3].padStart(2, "0");
+      dates.push({
+        date: `${year}.${month}.${day}`,
+        index: dateMatch.index,
+      });
+    }
+
+    // 각 날짜 주변에서 금액 찾기
+    for (let i = 0; i < dates.length; i++) {
+      const startIdx = dates[i].index;
+      const endIdx = i < dates.length - 1 ? dates[i + 1].index : text.length;
+      const segment = text.substring(startIdx, endIdx);
+
+      // 금액 패턴 (음수 포함)
+      const amounts: { value: number; isNegative: boolean }[] = [];
+      const amountMatches = segment.match(/-?[\d,]+/g) || [];
+
+      for (const am of amountMatches) {
+        const parsed = parseAmount(am);
+        if (parsed.value > 0) {
+          amounts.push(parsed);
+        }
+      }
+
+      if (amounts.length >= 2) {
+        // 입금/출금 구분
+        const isDeposit = segment.includes("입금") || segment.includes("이자");
+        const isWithdrawal = segment.includes("출금") || segment.includes("대출원리금") || segment.includes("전자금융");
+
+        // 첫 번째 큰 금액이 거래금액, 두 번째가 잔액인 경우가 많음
+        let transactionAmount = amounts[0];
+        let balanceAmount = amounts.length > 1 ? amounts[1] : { value: 0, isNegative: false };
+
+        // 음수면 출금
+        const transaction: TransactionRow = {
+          date: dates[i].date,
+          description: segment.replace(/\d{4}\.\s*\d{1,2}\.\d{1,2}/, "").trim().substring(0, 50),
+          deposit: (isDeposit || (!isWithdrawal && !transactionAmount.isNegative)) && !transactionAmount.isNegative ? transactionAmount.value : 0,
+          withdrawal: (isWithdrawal || transactionAmount.isNegative) ? transactionAmount.value : 0,
+          balance: balanceAmount.value,
+        };
+
+        // 이자 0원 같은 건 제외
+        if (transaction.deposit > 0 || transaction.withdrawal > 0) {
+          transactions.push(transaction);
+        }
+      }
+    }
+  }
+
+  // 여전히 없으면 원본 라인 기반 파싱
+  if (transactions.length === 0) {
+    const lines = text.split("\n").map(l => l.trim()).filter(l => l.length > 0);
+    const simpleDatePattern = /(\d{4})[.\-\/](\d{1,2})[.\-\/](\d{1,2})/;
+
+    for (const line of lines) {
+      const dateMatch = line.match(simpleDatePattern);
+      if (!dateMatch) continue;
+
+      const amountMatches = line.match(/-?[\d,]+/g) || [];
+      const amounts = amountMatches.map(a => parseAmount(a)).filter(a => a.value > 0);
+
+      if (amounts.length === 0) continue;
+
+      const isDeposit = line.includes("입금");
+      const transaction: TransactionRow = {
+        date: dateMatch[0],
+        description: line.replace(dateMatch[0], "").trim().substring(0, 50),
+        deposit: isDeposit ? amounts[0].value : 0,
+        withdrawal: !isDeposit ? amounts[0].value : 0,
+        balance: amounts.length > 1 ? amounts[amounts.length - 1].value : 0,
+      };
+
+      if (transaction.deposit > 0 || transaction.withdrawal > 0) {
+        transactions.push(transaction);
+      }
     }
   }
 
