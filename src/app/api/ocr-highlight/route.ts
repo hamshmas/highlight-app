@@ -76,8 +76,8 @@ export async function POST(request: NextRequest) {
       return 0;
     };
 
-    const depositKeywords = ["입금", "맡기신", "받으신", "deposit"];
-    const withdrawalKeywords = ["출금", "찾으신", "보내신", "withdrawal"];
+    const depositKeywords = ["입금", "입금액", "입금금액", "맡기신", "받으신", "deposit"];
+    const withdrawalKeywords = ["출금", "출금액", "출금금액", "찾으신", "보내신", "withdrawal"];
     const generalAmountKeywords = ["거래금액", "금액", "amount"];
 
     // 금액 컬럼 판별 함수

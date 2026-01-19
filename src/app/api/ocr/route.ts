@@ -2,9 +2,10 @@ import { NextRequest, NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { ImageAnnotatorClient } from "@google-cloud/vision";
 import { logAction } from "@/lib/supabase";
-import { generateFileHash, getCachedParsing, saveParsing, isCacheEnabled } from "@/lib/cache";
+import { generateFileHash, getCachedParsing, saveParsing, isCacheEnabled, deleteCachedParsing } from "@/lib/cache";
 import * as mupdf from "mupdf";
 import { GoogleGenerativeAI } from "@google/generative-ai";
+import { parseWithBankRule } from "@/lib/bank-rules";
 
 interface TransactionRow {
   date: string;
@@ -50,125 +51,8 @@ function getGeminiClient(): GoogleGenerativeAI | null {
   return new GoogleGenerativeAI(apiKey);
 }
 
-// AI로 샘플 거래 파싱 (처음 5개)
-async function parseSampleTransactions(sampleText: string): Promise<TransactionRow[] | null> {
-  const gemini = getGeminiClient();
-  if (!gemini) {
-    console.log("Gemini API not configured");
-    return null;
-  }
-
-  try {
-    const model = gemini.getGenerativeModel({ model: "gemini-2.0-flash" });
-
-    const prompt = `당신은 한국 은행 거래내역을 정확하게 파싱하는 전문가입니다.
-
-## 작업
-아래 텍스트에서 처음 5개의 거래내역만 추출하여 JSON 배열로 반환하세요.
-
-## 입력 텍스트
-${sampleText}
-
-## 출력 형식
-반드시 유효한 JSON 배열만 반환하세요. 처음 5개 거래만 추출하세요.
-
-## 중요: 컬럼명 규칙
-- 원본 문서에 있는 컬럼명(헤더)을 그대로 JSON 키로 사용하세요
-- 예: "거래일", "거래일자", "일자" → 원본 그대로 사용
-- 예: "적요", "내용", "거래내용" → 원본 그대로 사용
-- 예: "찾으신금액", "출금", "출금액" → 원본 그대로 사용
-- 예: "맡기신금액", "입금", "입금액" → 원본 그대로 사용
-- 예: "잔액", "거래후잔액" → 원본 그대로 사용
-- 공백이 있는 컬럼명은 공백을 제거하세요 (예: "거래 일자" → "거래일자")
-
-## 파싱 규칙
-- 날짜 값은 "YYYY.MM.DD" 형식으로 통일
-- 금액 값은 숫자만 (쉼표, 원, ₩ 제거)
-- 텍스트에서 발견되는 모든 컬럼을 추출하세요
-- 빈 값은 문자열 컬럼은 "", 숫자 컬럼은 0으로 설정
-
-JSON 배열만 반환하세요:`;
-
-    const result = await model.generateContent(prompt);
-    const response = result.response.text();
-
-    // 토큰 사용량 추적
-    const usageMetadata = result.response.usageMetadata;
-    if (usageMetadata) {
-      addTokenUsage(usageMetadata.promptTokenCount || 0, usageMetadata.candidatesTokenCount || 0);
-    }
-
-    let jsonStr = response;
-    const codeBlockMatch = response.match(/```(?:json)?\s*([\s\S]*?)```/);
-    if (codeBlockMatch) {
-      jsonStr = codeBlockMatch[1].trim();
-    }
-
-    const jsonMatch = jsonStr.match(/\[[\s\S]*\]/);
-    if (!jsonMatch) {
-      console.log("Failed to parse sample transactions");
-      return null;
-    }
-
-    const transactions = JSON.parse(jsonMatch[0]) as TransactionRow[];
-
-    // 동적 컬럼명 지원을 위한 헬퍼 함수
-    const findDateColumn = (tx: TransactionRow): string | null => {
-      const dateKeywords = ["거래일", "일자", "날짜", "date"];
-      for (const key of Object.keys(tx)) {
-        if (dateKeywords.some(kw => key.toLowerCase().includes(kw.toLowerCase()))) {
-          return tx[key] as string;
-        }
-      }
-      return null;
-    };
-
-    const findAmountValue = (tx: TransactionRow, keywords: string[]): number => {
-      for (const key of Object.keys(tx)) {
-        if (keywords.some(kw => key.toLowerCase().includes(kw.toLowerCase()))) {
-          const val = tx[key];
-          if (typeof val === "number") return val;
-          if (typeof val === "string") return parseFloat(val.replace(/[,원₩]/g, "")) || 0;
-        }
-      }
-      return 0;
-    };
-
-    const depositKeywords = ["입금", "맡기신", "받으신", "deposit"];
-    const withdrawalKeywords = ["출금", "찾으신", "보내신", "withdrawal"];
-    const generalAmountKeywords = ["거래금액", "금액", "amount"];
-
-    // 정제
-    const validTransactions = transactions
-      .filter(tx => {
-        const dateVal = findDateColumn(tx);
-        const depositVal = findAmountValue(tx, depositKeywords);
-        const withdrawalVal = findAmountValue(tx, withdrawalKeywords);
-        const generalAmount = findAmountValue(tx, generalAmountKeywords);
-        // 입금/출금 컬럼이 있거나, 거래금액 컬럼이 있으면 유효한 거래
-        return dateVal && (depositVal > 0 || withdrawalVal > 0 || generalAmount > 0);
-      })
-      .map(tx => {
-        const normalized = { ...tx };
-        for (const key of Object.keys(normalized)) {
-          const val = normalized[key];
-          if (typeof val === "string" && /^[\d,]+$/.test(val.replace(/[원₩\s]/g, ""))) {
-            normalized[key] = parseFloat(val.replace(/[,원₩\s]/g, "")) || 0;
-          }
-        }
-        return normalized;
-      });
-
-    console.log(`AI parsed ${validTransactions.length} sample transactions`);
-    return validTransactions;
-  } catch (error) {
-    console.error("Error parsing sample:", error);
-    return null;
-  }
-}
-
 // 텍스트를 청크로 분할 (날짜 경계 기준)
-function splitTextIntoChunks(text: string, chunkSize: number = 4000): string[] {
+function splitTextIntoChunks(text: string, chunkSize: number = 3500): string[] {
   const chunks: string[] = [];
 
   if (text.length <= chunkSize) {
@@ -207,7 +91,6 @@ function splitTextIntoChunks(text: string, chunkSize: number = 4000): string[] {
 
     startIndex = endIndex;
     if (startIndex === lastValidBreak) {
-      // 무한 루프 방지
       startIndex += chunkSize;
     }
     lastValidBreak = startIndex;
@@ -216,51 +99,95 @@ function splitTextIntoChunks(text: string, chunkSize: number = 4000): string[] {
   return chunks;
 }
 
-// 단일 청크 AI 파싱 (규칙 적용)
+// 불완전한 JSON 복구 시도
+function tryFixIncompleteJson(jsonStr: string): string | null {
+  // 마지막 완전한 객체까지만 추출
+  let bracketCount = 0;
+  let lastCompleteIndex = -1;
+  let inString = false;
+  let escaped = false;
+
+  for (let i = 0; i < jsonStr.length; i++) {
+    const char = jsonStr[i];
+
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+
+    if (char === '\\') {
+      escaped = true;
+      continue;
+    }
+
+    if (char === '"') {
+      inString = !inString;
+      continue;
+    }
+
+    if (inString) continue;
+
+    if (char === '{') bracketCount++;
+    if (char === '}') {
+      bracketCount--;
+      if (bracketCount === 0) {
+        lastCompleteIndex = i;
+      }
+    }
+  }
+
+  if (lastCompleteIndex > 0) {
+    // 마지막 완전한 객체 이후의 ],를 찾아서 배열 닫기
+    const fixed = jsonStr.substring(0, lastCompleteIndex + 1) + ']';
+    return fixed;
+  }
+
+  return null;
+}
+
+// 단일 청크 AI 파싱 (규칙 적용) - 재시도 로직 포함
 async function parseChunkWithAI(
   chunkText: string,
   chunkIndex: number,
   detectedColumns: string[],
-  sampleExample: string
+  sampleExample: string,
+  retryCount: number = 0
 ): Promise<TransactionRow[]> {
   const gemini = getGeminiClient();
   if (!gemini) return [];
 
-  try {
-    const model = gemini.getGenerativeModel({ model: "gemini-2.0-flash" });
+  const maxRetries = 1;
 
-    const columnsDescription = detectedColumns.length > 0
-      ? `사용할 컬럼명: ${detectedColumns.join(", ")}`
+  try {
+    const model = gemini.getGenerativeModel({
+      model: "gemini-2.0-flash",
+      generationConfig: {
+        maxOutputTokens: 16384, // 충분한 출력 토큰 확보
+      },
+    });
+
+    // 컬럼 힌트 (있는 경우만)
+    const columnHint = detectedColumns.length > 0
+      ? `\n사용할 컬럼명: ${detectedColumns.join(", ")}`
       : "";
 
-    const prompt = `당신은 한국 은행 거래내역을 정확하게 파싱하는 전문가입니다.
+    const sampleHint = sampleExample !== "[]"
+      ? `\n출력 형식 예시:\n${sampleExample}`
+      : "";
 
-## 작업
-아래 텍스트에서 모든 거래내역을 추출하여 JSON 배열로 반환하세요.
+    const prompt = `은행 거래내역을 JSON 배열로 변환하세요.
 
-## 참고: 이 문서의 형식 예시 (동일한 컬럼명 사용)
-${sampleExample}
+규칙:
+- 날짜와 금액이 있는 거래 행만 추출
+- 헤더, 합계, 페이지번호, 안내문구 제외
+- 컬럼명은 원본 헤더 그대로 사용
+- 금액은 숫자만 (쉼표 없이)
+- 완전한 JSON 배열만 출력 (코드블록 없이)${columnHint}${sampleHint}
 
-${columnsDescription ? `## ${columnsDescription}` : ""}
-
-## 입력 텍스트 (청크 ${chunkIndex + 1})
+텍스트:
 ${chunkText}
 
-## 출력 형식
-반드시 유효한 JSON 배열만 반환하세요.
-
-## 중요: 컬럼명 규칙
-- 위 예시에서 사용된 컬럼명을 정확히 동일하게 사용하세요
-- 원본 문서의 컬럼명을 그대로 JSON 키로 사용해야 합니다
-- 공백이 있는 컬럼명은 공백을 제거하세요
-
-## 파싱 규칙
-- 날짜 값은 "YYYY.MM.DD" 형식으로 통일
-- 금액 값은 숫자만 (쉼표, 원, ₩ 제거)
-- 빈 값은 문자열 컬럼은 "", 숫자 컬럼은 0으로 설정
-- 위 예시와 정확히 동일한 형식으로 파싱하세요
-
-JSON 배열만 반환하세요:`;
+JSON:`;
 
     const result = await model.generateContent(prompt);
     const response = result.response.text();
@@ -271,74 +198,95 @@ JSON 배열만 반환하세요:`;
       addTokenUsage(usageMetadata.promptTokenCount || 0, usageMetadata.candidatesTokenCount || 0);
     }
 
-    let jsonStr = response;
-    const codeBlockMatch = response.match(/```(?:json)?\s*([\s\S]*?)```/);
-    if (codeBlockMatch) jsonStr = codeBlockMatch[1].trim();
+    let jsonStr = response.trim();
 
-    const jsonMatch = jsonStr.match(/\[[\s\S]*\]/);
+    // 코드블록 제거
+    const codeBlockMatch = jsonStr.match(/```(?:json)?\s*([\s\S]*?)```/);
+    if (codeBlockMatch) {
+      jsonStr = codeBlockMatch[1].trim();
+    }
+
+    // JSON 배열 추출
+    let jsonMatch = jsonStr.match(/\[[\s\S]*\]/);
+
+    // JSON 배열을 찾지 못한 경우
     if (!jsonMatch) {
-      console.log(`Chunk ${chunkIndex + 1}: No JSON array found in response`);
-      console.log(`Chunk ${chunkIndex + 1} response preview:`, response.substring(0, 500));
+      // [ 로 시작하는지 확인하고 불완전한 JSON 복구 시도
+      const arrayStart = jsonStr.indexOf('[');
+      if (arrayStart >= 0) {
+        const partialJson = jsonStr.substring(arrayStart);
+        const fixed = tryFixIncompleteJson(partialJson);
+        if (fixed) {
+          jsonStr = fixed;
+          jsonMatch = [fixed];
+          console.log(`Chunk ${chunkIndex + 1}: Fixed incomplete JSON`);
+        }
+      }
+    }
+
+    if (!jsonMatch) {
+      console.log(`Chunk ${chunkIndex + 1}: No JSON array found`);
+      // 재시도
+      if (retryCount < maxRetries) {
+        console.log(`Chunk ${chunkIndex + 1}: Retrying... (${retryCount + 1}/${maxRetries})`);
+        return parseChunkWithAI(chunkText, chunkIndex, detectedColumns, sampleExample, retryCount + 1);
+      }
       return [];
     }
 
-    const transactions = JSON.parse(jsonMatch[0]) as TransactionRow[];
-    console.log(`Chunk ${chunkIndex + 1}: parsed ${transactions.length} raw transactions`);
-
-    // 동적 컬럼명 지원
-    const findDateColumn = (tx: TransactionRow): string | null => {
-      const dateKeywords = ["거래일", "일자", "날짜", "date"];
-      for (const key of Object.keys(tx)) {
-        if (dateKeywords.some(kw => key.toLowerCase().includes(kw.toLowerCase()))) {
-          return tx[key] as string;
+    let transactions: TransactionRow[];
+    try {
+      transactions = JSON.parse(jsonMatch[0]) as TransactionRow[];
+    } catch (parseError) {
+      // JSON 파싱 실패 시 불완전한 JSON 복구 시도
+      const fixed = tryFixIncompleteJson(jsonMatch[0]);
+      if (fixed) {
+        try {
+          transactions = JSON.parse(fixed) as TransactionRow[];
+          console.log(`Chunk ${chunkIndex + 1}: Recovered ${transactions.length} transactions from incomplete JSON`);
+        } catch {
+          console.log(`Chunk ${chunkIndex + 1}: JSON recovery failed`);
+          if (retryCount < maxRetries) {
+            console.log(`Chunk ${chunkIndex + 1}: Retrying... (${retryCount + 1}/${maxRetries})`);
+            return parseChunkWithAI(chunkText, chunkIndex, detectedColumns, sampleExample, retryCount + 1);
+          }
+          return [];
         }
-      }
-      return null;
-    };
-
-    const findAmountValue = (tx: TransactionRow, keywords: string[]): number => {
-      for (const key of Object.keys(tx)) {
-        if (keywords.some(kw => key.toLowerCase().includes(kw.toLowerCase()))) {
-          const val = tx[key];
-          if (typeof val === "number") return val;
-          if (typeof val === "string") return parseFloat(val.replace(/[,원₩]/g, "")) || 0;
+      } else {
+        if (retryCount < maxRetries) {
+          console.log(`Chunk ${chunkIndex + 1}: Retrying... (${retryCount + 1}/${maxRetries})`);
+          return parseChunkWithAI(chunkText, chunkIndex, detectedColumns, sampleExample, retryCount + 1);
         }
+        return [];
       }
-      return 0;
-    };
+    }
 
-    const depositKeywords = ["입금", "맡기신", "받으신", "deposit"];
-    const withdrawalKeywords = ["출금", "찾으신", "보내신", "withdrawal"];
-    const generalAmountKeywords = ["거래금액", "금액", "amount"];
+    console.log(`Chunk ${chunkIndex + 1}: parsed ${transactions.length} transactions`);
 
-    const filtered = transactions
-      .filter(tx => {
-        const dateVal = findDateColumn(tx);
-        const depositVal = findAmountValue(tx, depositKeywords);
-        const withdrawalVal = findAmountValue(tx, withdrawalKeywords);
-        const generalAmount = findAmountValue(tx, generalAmountKeywords);
-        // 입금/출금 컬럼이 있거나, 거래금액 컬럼이 있으면 유효한 거래
-        return dateVal && (depositVal > 0 || withdrawalVal > 0 || generalAmount > 0);
-      })
-      .map(tx => {
-        const normalized = { ...tx };
-        for (const key of Object.keys(normalized)) {
-          const val = normalized[key];
-          if (typeof val === "string" && /^[\d,]+$/.test(val.replace(/[원₩\s]/g, ""))) {
-            normalized[key] = parseFloat(val.replace(/[,원₩\s]/g, "")) || 0;
+    // 필터링 없이 모든 거래 반환 (AI가 이미 거래만 추출함)
+    // 금액 문자열을 숫자로 변환
+    const normalized = transactions.map(tx => {
+      const result = { ...tx };
+      for (const key of Object.keys(result)) {
+        const val = result[key];
+        // 숫자와 쉼표만 있는 문자열을 숫자로 변환
+        if (typeof val === "string") {
+          const cleaned = val.replace(/[,원₩\s]/g, "");
+          if (/^\d+$/.test(cleaned) && cleaned.length > 0) {
+            result[key] = parseFloat(cleaned);
           }
         }
-        return normalized;
-      });
+      }
+      return result;
+    });
 
-    console.log(`Chunk ${chunkIndex + 1}: ${filtered.length} transactions after filtering`);
-    return filtered;
+    return normalized;
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
-    console.error(`Chunk ${chunkIndex + 1} parsing error:`, errorMessage);
-    // API 에러인 경우 상세 정보 출력
-    if (error && typeof error === 'object' && 'status' in error) {
-      console.error(`Chunk ${chunkIndex + 1} API error status:`, (error as { status: number }).status);
+    console.error(`Chunk ${chunkIndex + 1} error:`, errorMessage);
+    if (retryCount < maxRetries) {
+      console.log(`Chunk ${chunkIndex + 1}: Retrying after error... (${retryCount + 1}/${maxRetries})`);
+      return parseChunkWithAI(chunkText, chunkIndex, detectedColumns, sampleExample, retryCount + 1);
     }
     return [];
   }
@@ -380,35 +328,43 @@ function calculateCost(usage: TokenUsage): { usd: number; krw: number } {
 
 // 병렬 AI 파싱
 async function parseFullTextWithAIParallel(
-  text: string,
-  detectedColumns: string[],
-  sampleTransactions: TransactionRow[]
+  text: string
 ): Promise<TransactionRow[] | null> {
   const gemini = getGeminiClient();
   if (!gemini) return null;
 
   try {
-    // 샘플 거래를 예시 문자열로 변환
-    const sampleExample = sampleTransactions.length > 0
-      ? JSON.stringify(sampleTransactions.slice(0, 3), null, 2)
-      : "[]";
-
-    // 텍스트를 청크로 분할 (약 15,000자씩 - 청크 수 줄이기)
-    const chunks = splitTextIntoChunks(text, 15000);
+    // 텍스트를 청크로 분할 (약 3,500자씩)
+    const chunks = splitTextIntoChunks(text, 4000);
     console.log(`Splitting text into ${chunks.length} chunks for parallel AI processing`);
 
-    // 병렬로 모든 청크 처리
+    // 1단계: 첫 번째 청크를 먼저 파싱하여 컬럼명 확인
+    const firstChunkResult = await parseChunkWithAI(chunks[0], 0, [], "[]");
+
+    // 첫 번째 청크에서 컬럼명 추출
+    let columnsFromFirst: string[] = [];
+    let sampleExample = "[]";
+
+    if (firstChunkResult.length > 0) {
+      columnsFromFirst = Object.keys(firstChunkResult[0]);
+      sampleExample = JSON.stringify(firstChunkResult.slice(0, 3), null, 2);
+      console.log(`First chunk columns: ${columnsFromFirst.join(", ")}`);
+    }
+
+    // 2단계: 나머지 청크들을 병렬 처리 (첫 번째 청크의 컬럼명과 샘플 전달)
     const startTime = Date.now();
-    const chunkPromises = chunks.map((chunk, index) =>
-      parseChunkWithAI(chunk, index, detectedColumns, sampleExample)
+    const remainingChunks = chunks.slice(1);
+
+    const chunkPromises = remainingChunks.map((chunk, index) =>
+      parseChunkWithAI(chunk, index + 1, columnsFromFirst, sampleExample)
     );
 
     const results = await Promise.all(chunkPromises);
     const elapsed = Date.now() - startTime;
     console.log(`Parallel AI processing completed in ${elapsed}ms`);
 
-    // 모든 결과 합치기
-    const allTransactions: TransactionRow[] = [];
+    // 모든 결과 합치기 (첫 번째 청크 포함)
+    const allTransactions: TransactionRow[] = [...firstChunkResult];
     for (const chunkTransactions of results) {
       allTransactions.push(...chunkTransactions);
     }
@@ -454,52 +410,21 @@ async function parseWithAI(text: string): Promise<ParseResult | null> {
   try {
     const startTime = Date.now();
 
-    // ===== 1단계: 샘플 AI 파싱 =====
-    const sampleText = text.substring(0, 3000);
-    console.log(`[1단계] 샘플 AI 파싱 시작 (${sampleText.length}자)`);
-
-    const sampleStartTime = Date.now();
-    const sampleTransactions = await parseSampleTransactions(sampleText);
-    const sampleElapsed = Date.now() - sampleStartTime;
-    console.log(`[1단계] 샘플 AI 파싱 완료: ${sampleElapsed}ms`);
-
-    if (!sampleTransactions || sampleTransactions.length === 0) {
-      console.log("샘플 파싱 실패, AI 병렬 파싱으로 폴백");
-      const result = await parseFullTextWithAIParallel(text, [], []);
-      const cost = calculateCost(totalTokenUsage);
-      return result ? { transactions: result, tokenUsage: { ...totalTokenUsage }, cost } : null;
-    }
-
-    console.log(`[1단계] 샘플에서 ${sampleTransactions.length}개 거래 파싱됨`);
-
-    // 샘플에서 발견된 컬럼 추출
-    const detectedColumns = new Set<string>();
-    for (const tx of sampleTransactions) {
-      for (const key of Object.keys(tx)) {
-        if (tx[key] !== undefined && tx[key] !== null && tx[key] !== "" && tx[key] !== 0) {
-          detectedColumns.add(key);
-        }
-      }
-    }
-
-    // ===== 2단계: AI 병렬 전체 파싱 =====
-    console.log(`[2단계] AI 병렬 파싱 시작 (${text.length}자)`);
-    const aiParseStart = Date.now();
-    const allTransactions = await parseFullTextWithAIParallel(text, [...detectedColumns], sampleTransactions);
-    const aiParseElapsed = Date.now() - aiParseStart;
-    console.log(`[2단계] AI 병렬 파싱 완료: ${aiParseElapsed}ms`);
+    // 바로 AI 병렬 파싱 (샘플 파싱 생략)
+    console.log(`AI 병렬 파싱 시작 (${text.length}자)`);
+    const allTransactions = await parseFullTextWithAIParallel(text);
+    const elapsed = Date.now() - startTime;
+    console.log(`AI 병렬 파싱 완료: ${elapsed}ms`);
 
     if (!allTransactions || allTransactions.length === 0) {
-      console.log("전체 파싱 실패, 샘플 결과 반환");
-      const cost = calculateCost(totalTokenUsage);
-      return { transactions: sampleTransactions, tokenUsage: { ...totalTokenUsage }, cost };
+      console.log("파싱 실패");
+      return null;
     }
 
-    const totalElapsed = Date.now() - startTime;
     const cost = calculateCost(totalTokenUsage);
 
     console.log(`=== 파싱 완료 ===`);
-    console.log(`총 시간: ${totalElapsed}ms (샘플AI: ${sampleElapsed}ms, 전체AI: ${aiParseElapsed}ms)`);
+    console.log(`총 시간: ${elapsed}ms`);
     console.log(`총 거래: ${allTransactions.length}개`);
     console.log(`토큰 사용량: 입력 ${totalTokenUsage.inputTokens}, 출력 ${totalTokenUsage.outputTokens}`);
     console.log(`예상 비용: $${cost.usd.toFixed(6)} (약 ${cost.krw.toFixed(2)}원)`);
@@ -522,6 +447,7 @@ export async function POST(request: NextRequest) {
   try {
     const formData = await request.formData();
     const file = formData.get("file") as File;
+    const forceRefresh = formData.get("forceRefresh") === "true";
 
     if (!file) {
       return NextResponse.json({ error: "파일이 없습니다" }, { status: 400 });
@@ -547,8 +473,15 @@ export async function POST(request: NextRequest) {
     // PDF/이미지를 base64로 변환
     const arrayBuffer = await file.arrayBuffer();
 
-    // 캐시 확인 (활성화된 경우)
-    if (isCacheEnabled()) {
+    // forceRefresh인 경우 기존 캐시 삭제
+    if (forceRefresh && isCacheEnabled()) {
+      const fileHash = generateFileHash(arrayBuffer);
+      console.log(`Force refresh requested, deleting cache for: ${file.name} (hash: ${fileHash})`);
+      await deleteCachedParsing(fileHash);
+    }
+
+    // 캐시 확인 (활성화된 경우, forceRefresh가 아닌 경우)
+    if (isCacheEnabled() && !forceRefresh) {
       const fileHash = generateFileHash(arrayBuffer);
       console.log(`Checking cache for file: ${file.name} (hash: ${fileHash})`);
 
@@ -610,85 +543,91 @@ export async function POST(request: NextRequest) {
       const avgTextPerPage = totalTextLength / Math.min(pageCount, 3);
       const textRatio = pagesWithText / Math.min(pageCount, 3);
 
-      // 텍스트 기반 PDF인 경우 OCR 모드 차단
+      // 텍스트 기반 PDF인 경우 텍스트 직접 추출 (OCR 스킵)
       if (avgTextPerPage >= 100 && textRatio >= 0.7) {
         console.log(`Text-based PDF detected: avgTextPerPage=${avgTextPerPage}, textRatio=${textRatio}`);
-        return NextResponse.json(
-          {
-            error: "텍스트 기반 PDF입니다. OCR 모드 대신 일반 모드를 사용해주세요.",
-            isTextBasedPdf: true
-          },
-          { status: 400 }
-        );
-      }
+        console.log("Extracting text directly from PDF (skipping OCR)...");
 
-      // mupdf를 사용하여 PDF를 이미지로 변환 후 Vision OCR 사용
-      console.log("Converting PDF to images for OCR using mupdf...");
-
-      const maxPages = 50; // 최대 50페이지만 처리
-      const actualPageCount = Math.min(pageCount, maxPages);
-
-      // 위에서 이미 열린 doc, pageCount 재사용
-      console.log(`PDF has ${pageCount} pages, processing ${actualPageCount} pages`);
-
-      // 1단계: 모든 페이지를 이미지로 변환 (순차 - mupdf는 동기 API)
-      const pageImages: { pageNum: number; base64: string }[] = [];
-      const conversionStart = Date.now();
-
-      for (let pageNum = 0; pageNum < actualPageCount; pageNum++) {
-        try {
-          const page = doc.loadPage(pageNum);
-
-          // 150 DPI로 이미지 생성 (72 DPI가 기본, 2배 스케일 = 144 DPI)
-          const scale = 2.0;
-          const pixmap = page.toPixmap(
-            mupdf.Matrix.scale(scale, scale),
-            mupdf.ColorSpace.DeviceRGB,
-            false,
-            true
-          );
-
-          // PNG로 변환
-          const pngData = pixmap.asPNG();
-          const pageBase64 = Buffer.from(pngData).toString("base64");
-          pageImages.push({ pageNum, base64: pageBase64 });
-        } catch (pageError) {
-          console.error(`Error converting page ${pageNum + 1}:`, pageError);
-        }
-      }
-      console.log(`Image conversion completed in ${Date.now() - conversionStart}ms`);
-
-      // 2단계: Vision OCR 병렬 호출 (10개씩 배치로 처리)
-      const ocrStart = Date.now();
-      const batchSize = 10;
-      const allTexts: string[] = new Array(actualPageCount).fill("");
-
-      for (let batchStart = 0; batchStart < pageImages.length; batchStart += batchSize) {
-        const batch = pageImages.slice(batchStart, batchStart + batchSize);
-
-        const batchPromises = batch.map(async ({ pageNum, base64 }) => {
-          try {
-            const [result] = await visionClient.textDetection({
-              image: { content: base64 },
-              imageContext: { languageHints: ["ko", "en"] },
-            });
-
-            const pageText = result.fullTextAnnotation?.text || "";
-            if (pageText) {
-              allTexts[pageNum] = pageText;
-              console.log(`Page ${pageNum + 1}: extracted ${pageText.length} chars`);
-            }
-          } catch (pageError) {
-            console.error(`Error OCR page ${pageNum + 1}:`, pageError);
+        // 모든 페이지에서 텍스트 직접 추출
+        const allTexts: string[] = [];
+        for (let i = 0; i < pageCount; i++) {
+          const page = doc.loadPage(i);
+          const text = page.toStructuredText("preserve-whitespace").asText();
+          if (text) {
+            allTexts.push(text);
           }
-        });
+        }
+        fullText = allTexts.join("\n\n");
+        console.log(`Direct text extraction completed: ${fullText.length} characters from ${pageCount} pages`);
+      } else {
+        // 이미지 기반 PDF: mupdf를 사용하여 PDF를 이미지로 변환 후 Vision OCR 사용
+        console.log("Converting PDF to images for OCR using mupdf...");
 
-        await Promise.all(batchPromises);
+        const maxPages = 50; // 최대 50페이지만 처리
+        const actualPageCount = Math.min(pageCount, maxPages);
+
+        // 위에서 이미 열린 doc, pageCount 재사용
+        console.log(`PDF has ${pageCount} pages, processing ${actualPageCount} pages`);
+
+        // 1단계: 모든 페이지를 이미지로 변환 (순차 - mupdf는 동기 API)
+        const pageImages: { pageNum: number; base64: string }[] = [];
+        const conversionStart = Date.now();
+
+        for (let pageNum = 0; pageNum < actualPageCount; pageNum++) {
+          try {
+            const page = doc.loadPage(pageNum);
+
+            // 150 DPI로 이미지 생성 (72 DPI가 기본, 2배 스케일 = 144 DPI)
+            const scale = 2.0;
+            const pixmap = page.toPixmap(
+              mupdf.Matrix.scale(scale, scale),
+              mupdf.ColorSpace.DeviceRGB,
+              false,
+              true
+            );
+
+            // PNG로 변환
+            const pngData = pixmap.asPNG();
+            const pageBase64 = Buffer.from(pngData).toString("base64");
+            pageImages.push({ pageNum, base64: pageBase64 });
+          } catch (pageError) {
+            console.error(`Error converting page ${pageNum + 1}:`, pageError);
+          }
+        }
+        console.log(`Image conversion completed in ${Date.now() - conversionStart}ms`);
+
+        // 2단계: Vision OCR 병렬 호출 (10개씩 배치로 처리)
+        const ocrStart = Date.now();
+        const batchSize = 10;
+        const allTexts: string[] = new Array(actualPageCount).fill("");
+
+        for (let batchStart = 0; batchStart < pageImages.length; batchStart += batchSize) {
+          const batch = pageImages.slice(batchStart, batchStart + batchSize);
+
+          const batchPromises = batch.map(async ({ pageNum, base64 }) => {
+            try {
+              const [result] = await visionClient.textDetection({
+                image: { content: base64 },
+                imageContext: { languageHints: ["ko", "en"] },
+              });
+
+              const pageText = result.fullTextAnnotation?.text || "";
+              if (pageText) {
+                allTexts[pageNum] = pageText;
+                console.log(`Page ${pageNum + 1}: extracted ${pageText.length} chars`);
+              }
+            } catch (pageError) {
+              console.error(`Error OCR page ${pageNum + 1}:`, pageError);
+            }
+          });
+
+          await Promise.all(batchPromises);
+        }
+
+        console.log(`OCR completed in ${Date.now() - ocrStart}ms`);
+        fullText = allTexts.filter(t => t).join("\n\n");
+        console.log(`OCR PDF result: extracted ${fullText.length} total chars from ${allTexts.filter(t => t).length} pages`);
       }
-
-      console.log(`OCR completed in ${Date.now() - ocrStart}ms`);
-      fullText = allTexts.filter(t => t).join("\n\n");
-      console.log(`OCR PDF result: extracted ${fullText.length} total chars from ${allTexts.filter(t => t).length} pages`);
     } else {
       // 이미지의 경우
       const [result] = await visionClient.textDetection({
@@ -715,8 +654,66 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // 거래내역 파싱 (AI 전용)
+    // 거래내역 파싱
     console.log("OCR text sample (first 2000 chars):", fullText.substring(0, 2000));
+
+    // 1단계: 규칙 기반 파싱 시도
+    const ruleResult = parseWithBankRule(fullText);
+
+    if (ruleResult.success && ruleResult.transactions.length > 0) {
+      console.log(`규칙 기반 파싱 성공 (${ruleResult.bankRule?.bankName}): ${ruleResult.transactions.length}개 거래`);
+
+      const transactions = ruleResult.transactions as unknown as TransactionRow[];
+      const columns = ruleResult.columns;
+
+      // 캐시 저장 (AI 비용 0)
+      if (isCacheEnabled()) {
+        const fileHash = generateFileHash(arrayBuffer);
+        await saveParsing({
+          fileHash,
+          fileName: file.name,
+          fileSize: file.size,
+          parsingResult: transactions as Record<string, unknown>[],
+          columns,
+          tokenUsage: { inputTokens: 0, outputTokens: 0 },
+          aiCost: { usd: 0, krw: 0 },
+          userEmail,
+        });
+        console.log(`Cached parsing result for ${file.name}`);
+      }
+
+      // 작업 로그 기록
+      await logAction(userEmail, "ocr_extract", {
+        fileName: file.name,
+        fileSize: file.size,
+        extractedTextLength: fullText.length,
+        transactionCount: transactions.length,
+        columns: columns,
+        parsingMethod: "rule-based",
+        bankId: ruleResult.bankRule?.bankId,
+        aiCost: { usd: 0, krw: 0 },
+      });
+
+      return NextResponse.json({
+        success: true,
+        rawText: fullText,
+        transactions: transactions,
+        columns: columns,
+        usedAiParsing: false,
+        parsingMethod: "rule-based",
+        bankName: ruleResult.bankRule?.bankName,
+        message: `${transactions.length}개의 거래내역이 추출되었습니다. (${ruleResult.bankRule?.bankName} 규칙 사용)`,
+        aiCost: {
+          inputTokens: 0,
+          outputTokens: 0,
+          usd: 0,
+          krw: 0,
+        },
+      });
+    }
+
+    // 2단계: 규칙 기반 파싱 실패 시 AI 파싱
+    console.log(`규칙 기반 파싱 실패: ${ruleResult.error || "알 수 없는 오류"}, AI 파싱으로 폴백...`);
 
     const parseResult = await parseWithAI(fullText);
 
@@ -730,12 +727,12 @@ export async function POST(request: NextRequest) {
     const { transactions, tokenUsage, cost } = parseResult;
     console.log(`AI parsing successful: ${transactions.length} transactions`);
 
-    // 동적 컬럼 추출 (첫 번째 거래의 컬럼 순서 그대로 유지)
+    // 동적 컬럼 추출 (모든 거래에서 컬럼 통합)
     const columns: string[] = [];
     const seenColumns = new Set<string>();
 
     if (transactions.length > 0) {
-      // 첫 번째 거래에서 모든 컬럼을 순서대로 추출 (값에 상관없이)
+      // 첫 번째 거래에서 기본 컬럼 순서 설정
       for (const key of Object.keys(transactions[0])) {
         if (!seenColumns.has(key)) {
           columns.push(key);
@@ -743,16 +740,17 @@ export async function POST(request: NextRequest) {
         }
       }
 
-      // 나머지 거래에서 추가 컬럼 확인
-      const sampleSize = Math.min(5, transactions.length);
-      for (let i = 1; i < sampleSize; i++) {
-        for (const key of Object.keys(transactions[i])) {
+      // 모든 거래에서 추가 컬럼 확인 (청크별로 컬럼이 다를 수 있음)
+      for (const tx of transactions) {
+        for (const key of Object.keys(tx)) {
           if (!seenColumns.has(key)) {
             columns.push(key);
             seenColumns.add(key);
           }
         }
       }
+
+      console.log(`Detected columns: ${columns.join(", ")}`);
     }
 
     // 캐시 저장 (활성화된 경우)
@@ -778,6 +776,7 @@ export async function POST(request: NextRequest) {
       extractedTextLength: fullText.length,
       transactionCount: transactions.length,
       columns: columns,
+      parsingMethod: "ai",
       aiCost: cost,
       tokenUsage: tokenUsage,
     });
@@ -788,7 +787,8 @@ export async function POST(request: NextRequest) {
       transactions: transactions,
       columns: columns,
       usedAiParsing: true,
-      message: `${transactions.length}개의 거래내역이 추출되었습니다.`,
+      parsingMethod: "ai",
+      message: `${transactions.length}개의 거래내역이 추출되었습니다. (AI 파싱)`,
       aiCost: {
         inputTokens: tokenUsage.inputTokens,
         outputTokens: tokenUsage.outputTokens,
