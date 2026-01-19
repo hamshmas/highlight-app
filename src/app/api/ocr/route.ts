@@ -50,16 +50,17 @@ function getVisionClient(): ImageAnnotatorClient | null {
     // private_key 형식 정규화 (다양한 인코딩 케이스 처리)
     let privateKey = credentials.private_key;
 
-    // 1. 리터럴 \\n을 실제 줄바꿈으로 변환
-    if (privateKey.includes('\\n')) {
+    // 1. 리터럴 \\n을 실제 줄바꿈으로 변환 (여러 번 적용될 수 있음)
+    while (privateKey.includes('\\n')) {
       privateKey = privateKey.replace(/\\n/g, '\n');
     }
 
-    // 2. 줄바꿈이 전혀 없는 경우 (한 줄로 된 키) - BEGIN/END 마커 사이에 줄바꿈 추가
+    // 2. 줄바꿈이 전혀 없는 경우 (한 줄로 된 키) - 수동으로 포맷팅
     if (!privateKey.includes('\n')) {
-      privateKey = privateKey
-        .replace('-----BEGIN PRIVATE KEY-----', '-----BEGIN PRIVATE KEY-----\n')
-        .replace('-----END PRIVATE KEY-----', '\n-----END PRIVATE KEY-----\n');
+      // BEGIN 마커 뒤에 줄바꿈 추가
+      privateKey = privateKey.replace('-----BEGIN PRIVATE KEY-----', '-----BEGIN PRIVATE KEY-----\n');
+      // END 마커 앞에 줄바꿈 추가
+      privateKey = privateKey.replace('-----END PRIVATE KEY-----', '\n-----END PRIVATE KEY-----\n');
     }
 
     // 3. 마지막에 줄바꿈이 없으면 추가
@@ -71,12 +72,20 @@ function getVisionClient(): ImageAnnotatorClient | null {
 
     console.log("Creating Vision client with project:", credentials.project_id);
     console.log("Client email:", credentials.client_email);
-    console.log("Private key starts with:", privateKey.substring(0, 50));
-    console.log("Private key ends with:", privateKey.substring(privateKey.length - 50));
-    console.log("Private key has newlines:", privateKey.includes('\n'));
-    console.log("Private key length:", privateKey.length);
+    console.log("Private key format check:");
+    console.log("  - starts with BEGIN:", privateKey.startsWith('-----BEGIN PRIVATE KEY-----'));
+    console.log("  - ends with END + newline:", privateKey.endsWith('-----END PRIVATE KEY-----\n'));
+    console.log("  - has internal newlines:", (privateKey.match(/\n/g) || []).length);
+    console.log("  - length:", privateKey.length);
 
-    return new ImageAnnotatorClient({ credentials });
+    // credentials 객체 대신 개별 필드를 직접 전달
+    return new ImageAnnotatorClient({
+      projectId: credentials.project_id,
+      credentials: {
+        client_email: credentials.client_email,
+        private_key: privateKey,
+      },
+    });
   } catch (error) {
     console.error("Failed to parse Google Cloud credentials:", error);
     console.error("Credentials length:", credentialsJson.length);
