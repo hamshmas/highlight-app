@@ -4,6 +4,7 @@ import { ImageAnnotatorClient } from "@google-cloud/vision";
 import { GoogleAuth } from "google-auth-library";
 import { logAction } from "@/lib/supabase";
 import { generateFileHash, getCachedParsing, saveParsing, isCacheEnabled, deleteCachedParsing } from "@/lib/cache";
+import { downloadFileFromStorage, deleteFileFromStorage } from "@/lib/storage";
 import * as mupdf from "mupdf";
 import { GoogleGenerativeAI } from "@google/generative-ai";
 import { parseWithBankRule } from "@/lib/bank-rules";
@@ -509,12 +510,53 @@ export async function POST(request: NextRequest) {
   const userEmail = session.user?.email || "unknown";
 
   try {
-    const formData = await request.formData();
-    const file = formData.get("file") as File;
-    const forceRefresh = formData.get("forceRefresh") === "true";
+    // Content-Type에 따라 요청 처리 방식 결정
+    const contentType = request.headers.get("content-type") || "";
 
-    if (!file) {
-      return NextResponse.json({ error: "파일이 없습니다" }, { status: 400 });
+    let arrayBuffer: ArrayBuffer;
+    let fileName: string;
+    let fileSize: number;
+    let forceRefresh = false;
+    let storagePath: string | null = null;
+
+    if (contentType.includes("application/json")) {
+      // JSON 요청: Storage에서 파일 다운로드
+      const body = await request.json();
+      storagePath = body.storagePath;
+      fileName = body.fileName;
+      forceRefresh = body.forceRefresh === true;
+
+      if (!storagePath || !fileName) {
+        return NextResponse.json({ error: "storagePath와 fileName이 필요합니다" }, { status: 400 });
+      }
+
+      console.log(`Downloading file from storage: ${storagePath}`);
+      const downloadResult = await downloadFileFromStorage(storagePath);
+
+      if (downloadResult.error || !downloadResult.data) {
+        console.error("Storage download error:", downloadResult.error);
+        return NextResponse.json(
+          { error: "파일 다운로드 실패: " + downloadResult.error },
+          { status: 500 }
+        );
+      }
+
+      arrayBuffer = downloadResult.data;
+      fileSize = arrayBuffer.byteLength;
+      console.log(`Downloaded file: ${fileName}, size: ${fileSize}`);
+    } else {
+      // FormData 요청: 직접 업로드 (작은 파일용, 4.5MB 이하)
+      const formData = await request.formData();
+      const file = formData.get("file") as File;
+      forceRefresh = formData.get("forceRefresh") === "true";
+
+      if (!file) {
+        return NextResponse.json({ error: "파일이 없습니다" }, { status: 400 });
+      }
+
+      fileName = file.name;
+      fileSize = file.size;
+      arrayBuffer = await file.arrayBuffer();
     }
 
     const visionClient = getVisionClient();
@@ -534,28 +576,32 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // PDF/이미지를 base64로 변환
-    const arrayBuffer = await file.arrayBuffer();
-
     // forceRefresh인 경우 기존 캐시 삭제
     if (forceRefresh && isCacheEnabled()) {
       const fileHash = generateFileHash(arrayBuffer);
-      console.log(`Force refresh requested, deleting cache for: ${file.name} (hash: ${fileHash})`);
+      console.log(`Force refresh requested, deleting cache for: ${fileName} (hash: ${fileHash})`);
       await deleteCachedParsing(fileHash);
     }
 
     // 캐시 확인 (활성화된 경우, forceRefresh가 아닌 경우)
     if (isCacheEnabled() && !forceRefresh) {
       const fileHash = generateFileHash(arrayBuffer);
-      console.log(`Checking cache for file: ${file.name} (hash: ${fileHash})`);
+      console.log(`Checking cache for file: ${fileName} (hash: ${fileHash})`);
 
       const cached = await getCachedParsing(fileHash);
       if (cached) {
-        console.log(`Cache HIT for ${file.name}`);
+        console.log(`Cache HIT for ${fileName}`);
+
+        // Storage 파일 정리 (캐시 히트 시)
+        if (storagePath) {
+          deleteFileFromStorage(storagePath).catch(err =>
+            console.error("Failed to delete storage file:", err)
+          );
+        }
 
         await logAction(userEmail, "ocr_extract_cached", {
-          fileName: file.name,
-          fileSize: file.size,
+          fileName: fileName,
+          fileSize: fileSize,
           transactionCount: cached.parsing_result.length,
           columns: cached.columns,
           cacheHitCount: cached.hit_count + 1,
@@ -570,7 +616,7 @@ export async function POST(request: NextRequest) {
           aiCost: cached.ai_cost || { inputTokens: 0, outputTokens: 0, usd: 0, krw: 0 },
         });
       }
-      console.log(`Cache MISS for ${file.name}`);
+      console.log(`Cache MISS for ${fileName}`);
     }
 
     // 버퍼 복사 (여러 라이브러리에서 사용하기 위해)
@@ -579,11 +625,11 @@ export async function POST(request: NextRequest) {
     const base64Content = buffer.toString("base64");
 
     // Google Cloud Vision OCR 호출
-    const isPdf = file.name.toLowerCase().endsWith(".pdf");
+    const isPdf = fileName.toLowerCase().endsWith(".pdf");
 
     let fullText = "";
 
-    console.log("OCR: Processing file:", file.name, "isPdf:", isPdf, "size:", file.size);
+    console.log("OCR: Processing file:", fileName, "isPdf:", isPdf, "size:", fileSize);
 
     if (isPdf) {
       // 먼저 텍스트 기반 PDF인지 확인
@@ -708,7 +754,13 @@ export async function POST(request: NextRequest) {
     }
 
     if (!fullText) {
-      console.log("OCR result: No text extracted from file:", file.name, "isPdf:", isPdf);
+      console.log("OCR result: No text extracted from file:", fileName, "isPdf:", isPdf);
+      // Storage 파일 정리
+      if (storagePath) {
+        deleteFileFromStorage(storagePath).catch(err =>
+          console.error("Failed to delete storage file:", err)
+        );
+      }
       const errorMessage = isPdf
         ? "PDF에서 텍스트를 추출할 수 없습니다. 파일이 암호화되었거나 손상되었을 수 있습니다. 다른 방법으로 PDF를 다시 저장해보세요."
         : "이미지에서 텍스트를 추출할 수 없습니다. 이미지가 선명한지 확인해주세요.";
@@ -735,21 +787,28 @@ export async function POST(request: NextRequest) {
         const fileHash = generateFileHash(arrayBuffer);
         await saveParsing({
           fileHash,
-          fileName: file.name,
-          fileSize: file.size,
+          fileName: fileName,
+          fileSize: fileSize,
           parsingResult: transactions as Record<string, unknown>[],
           columns,
           tokenUsage: { inputTokens: 0, outputTokens: 0 },
           aiCost: { usd: 0, krw: 0 },
           userEmail,
         });
-        console.log(`Cached parsing result for ${file.name}`);
+        console.log(`Cached parsing result for ${fileName}`);
+      }
+
+      // Storage 파일 정리
+      if (storagePath) {
+        deleteFileFromStorage(storagePath).catch(err =>
+          console.error("Failed to delete storage file:", err)
+        );
       }
 
       // 작업 로그 기록
       await logAction(userEmail, "ocr_extract", {
-        fileName: file.name,
-        fileSize: file.size,
+        fileName: fileName,
+        fileSize: fileSize,
         extractedTextLength: fullText.length,
         transactionCount: transactions.length,
         columns: columns,
@@ -822,21 +881,28 @@ export async function POST(request: NextRequest) {
       const fileHash = generateFileHash(arrayBuffer);
       await saveParsing({
         fileHash,
-        fileName: file.name,
-        fileSize: file.size,
+        fileName: fileName,
+        fileSize: fileSize,
         parsingResult: transactions as Record<string, unknown>[],
         columns,
         tokenUsage: { ...tokenUsage },
         aiCost: { ...cost },
         userEmail,
       });
-      console.log(`Cached parsing result for ${file.name}`);
+      console.log(`Cached parsing result for ${fileName}`);
+    }
+
+    // Storage 파일 정리
+    if (storagePath) {
+      deleteFileFromStorage(storagePath).catch(err =>
+        console.error("Failed to delete storage file:", err)
+      );
     }
 
     // 작업 로그 기록
     await logAction(userEmail, "ocr_extract", {
-      fileName: file.name,
-      fileSize: file.size,
+      fileName: fileName,
+      fileSize: fileSize,
       extractedTextLength: fullText.length,
       transactionCount: transactions.length,
       columns: columns,

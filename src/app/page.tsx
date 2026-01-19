@@ -113,6 +113,9 @@ export default function Home() {
     setFiles([]);
   };
 
+  // Vercel 요청 본문 크기 제한 (4.5MB)
+  const VERCEL_BODY_LIMIT = 4.5 * 1024 * 1024;
+
   // OCR 추출
   const handleOcrExtract = async (file: File) => {
     setOcrStep("extracting");
@@ -123,23 +126,73 @@ export default function Home() {
 
     abortControllerRef.current = new AbortController();
 
-    const formData = new FormData();
-    formData.append("file", file);
-    if (forceRefresh) {
-      formData.append("forceRefresh", "true");
-    }
-
     try {
       // AI 파싱 시작 표시 (텍스트 추출 후)
       const aiParsingTimer = setTimeout(() => {
         setIsAiParsing(true);
       }, 3000);
 
-      const res = await fetch("/api/ocr", {
-        method: "POST",
-        body: formData,
-        signal: abortControllerRef.current.signal,
-      });
+      let res: Response;
+
+      // 파일 크기에 따라 업로드 방식 결정
+      if (file.size > VERCEL_BODY_LIMIT) {
+        // 큰 파일: Storage에 먼저 업로드
+        setResult({ message: `파일 업로드 중... - ${file.name} (${(file.size / 1024 / 1024).toFixed(1)}MB)`, type: "success" });
+
+        // 1. 업로드 URL 생성
+        const uploadUrlRes = await fetch("/api/upload-url", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ fileName: file.name, fileSize: file.size }),
+          signal: abortControllerRef.current.signal,
+        });
+
+        if (!uploadUrlRes.ok) {
+          const data = await uploadUrlRes.json();
+          throw new Error(data.error || "업로드 URL 생성 실패");
+        }
+
+        const { uploadUrl, path } = await uploadUrlRes.json();
+
+        // 2. Storage에 직접 업로드
+        const uploadRes = await fetch(uploadUrl, {
+          method: "PUT",
+          headers: { "Content-Type": file.type || "application/octet-stream" },
+          body: file,
+          signal: abortControllerRef.current.signal,
+        });
+
+        if (!uploadRes.ok) {
+          throw new Error("Storage 업로드 실패");
+        }
+
+        setResult({ message: `OCR 처리 중... - ${file.name}`, type: "success" });
+
+        // 3. OCR API 호출 (Storage 경로 전달)
+        res = await fetch("/api/ocr", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            storagePath: path,
+            fileName: file.name,
+            forceRefresh: forceRefresh,
+          }),
+          signal: abortControllerRef.current.signal,
+        });
+      } else {
+        // 작은 파일: 직접 업로드
+        const formData = new FormData();
+        formData.append("file", file);
+        if (forceRefresh) {
+          formData.append("forceRefresh", "true");
+        }
+
+        res = await fetch("/api/ocr", {
+          method: "POST",
+          body: formData,
+          signal: abortControllerRef.current.signal,
+        });
+      }
 
       clearTimeout(aiParsingTimer);
 
