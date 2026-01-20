@@ -877,18 +877,10 @@ export async function POST(request: NextRequest) {
           );
         }
 
-        // 중복 제거
-        const seen = new Set<string>();
-        const uniqueTransactions = allTransactionsFromImages.filter(tx => {
-          const key = Object.keys(tx).sort().map(k => `${k}:${tx[k]}`).join("|");
-          if (seen.has(key)) return false;
-          seen.add(key);
-          return true;
-        });
-
         // 컬럼 추출 (첫 번째 거래에서만 - 일관성 보장)
-        const columns: string[] = uniqueTransactions.length > 0
-          ? Object.keys(uniqueTransactions[0])
+        // 중복 제거 제거됨 - 같은 날 같은 금액 거래가 여러 개일 수 있음
+        const columns: string[] = allTransactionsFromImages.length > 0
+          ? Object.keys(allTransactionsFromImages[0])
           : [];
         console.log(`Columns from first transaction: ${columns.length} columns`);
 
@@ -901,7 +893,7 @@ export async function POST(request: NextRequest) {
             fileHash,
             fileName,
             fileSize,
-            parsingResult: uniqueTransactions as Record<string, unknown>[],
+            parsingResult: allTransactionsFromImages as Record<string, unknown>[],
             columns,
             tokenUsage: { ...totalTokenUsage },
             aiCost: { ...cost },
@@ -920,7 +912,7 @@ export async function POST(request: NextRequest) {
         await logAction(userEmail, "ocr_extract", {
           fileName,
           fileSize,
-          transactionCount: uniqueTransactions.length,
+          transactionCount: allTransactionsFromImages.length,
           columns,
           parsingMethod: "gemini-vision",
           documentType,
@@ -930,19 +922,19 @@ export async function POST(request: NextRequest) {
 
         // 디버그: 컬럼과 첫 번째 거래 출력
         console.log("Returning columns:", columns);
-        if (uniqueTransactions.length > 0) {
-          console.log("First transaction keys:", Object.keys(uniqueTransactions[0]));
+        if (allTransactionsFromImages.length > 0) {
+          console.log("First transaction keys:", Object.keys(allTransactionsFromImages[0]));
         }
 
         return NextResponse.json({
           success: true,
           rawText: "(Gemini Vision으로 이미지에서 직접 추출)",
-          transactions: uniqueTransactions,
+          transactions: allTransactionsFromImages,
           columns,
           usedAiParsing: true,
           parsingMethod: "gemini-vision",
           documentType,
-          message: `${uniqueTransactions.length}개의 거래내역이 추출되었습니다. (Gemini Vision)`,
+          message: `${allTransactionsFromImages.length}개의 거래내역이 추출되었습니다. (Gemini Vision)`,
           aiCost: {
             inputTokens: totalTokenUsage.inputTokens,
             outputTokens: totalTokenUsage.outputTokens,
