@@ -66,6 +66,16 @@ export default function Home() {
   // 캐시 무시 옵션
   const [forceRefresh, setForceRefresh] = useState(false);
 
+  // 파일 타입 정보 (업로드 전 안내용)
+  const [fileTypeInfo, setFileTypeInfo] = useState<{
+    documentType: "text-based" | "image-based" | "image" | null;
+    pageCount?: number;
+    message: string;
+    estimatedTime: string | null;
+    warning: string | null;
+    isChecking: boolean;
+  } | null>(null);
+
   // 페이지네이션 상태
   const [currentPage, setCurrentPage] = useState(1);
   const itemsPerPage = 50;
@@ -99,6 +109,37 @@ export default function Home() {
     };
   }, []);
 
+  // 파일 타입 확인 함수
+  const checkFileType = useCallback(async (file: File) => {
+    setFileTypeInfo({ documentType: null, message: "파일 분석 중...", estimatedTime: null, warning: null, isChecking: true });
+
+    try {
+      const formData = new FormData();
+      formData.append("file", file);
+
+      const res = await fetch("/api/check-pdf-type", {
+        method: "POST",
+        body: formData,
+      });
+
+      if (res.ok) {
+        const data = await res.json();
+        setFileTypeInfo({
+          documentType: data.documentType,
+          pageCount: data.pageCount,
+          message: data.message,
+          estimatedTime: data.estimatedTime,
+          warning: data.warning,
+          isChecking: false,
+        });
+      } else {
+        setFileTypeInfo(null);
+      }
+    } catch {
+      setFileTypeInfo(null);
+    }
+  }, []);
+
   const handleDrop = useCallback((e: React.DragEvent) => {
     e.preventDefault();
     setDragOver(false);
@@ -107,17 +148,21 @@ export default function Home() {
     );
     if (droppedFiles.length > 0) {
       setFiles([droppedFiles[0]]);
+      checkFileType(droppedFiles[0]);
     }
-  }, []);
+  }, [checkFileType]);
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files.length > 0) {
-      setFiles([e.target.files[0]]);
+      const file = e.target.files[0];
+      setFiles([file]);
+      checkFileType(file);
     }
   };
 
   const clearFiles = () => {
     setFiles([]);
+    setFileTypeInfo(null);
   };
 
   // Vercel 요청 본문 크기 제한 (4.5MB)
@@ -869,6 +914,53 @@ export default function Home() {
                   삭제
                 </button>
               </div>
+
+              {/* 파일 타입 정보 */}
+              {fileTypeInfo && (
+                <div className={`mt-3 p-3 rounded-lg ${
+                  fileTypeInfo.isChecking
+                    ? "bg-gray-100 text-gray-600"
+                    : fileTypeInfo.documentType === "text-based"
+                      ? "bg-green-100 text-green-800"
+                      : fileTypeInfo.documentType === "image-based"
+                        ? "bg-yellow-100 text-yellow-800"
+                        : "bg-blue-100 text-blue-800"
+                }`}>
+                  {fileTypeInfo.isChecking ? (
+                    <div className="flex items-center gap-2">
+                      <svg className="animate-spin h-4 w-4" viewBox="0 0 24 24">
+                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
+                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                      </svg>
+                      <span>파일 분석 중...</span>
+                    </div>
+                  ) : (
+                    <>
+                      <div className="flex items-center gap-2 mb-1">
+                        {fileTypeInfo.documentType === "text-based" ? (
+                          <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                          </svg>
+                        ) : (
+                          <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
+                          </svg>
+                        )}
+                        <span className="font-semibold">{fileTypeInfo.message}</span>
+                      </div>
+                      {fileTypeInfo.pageCount && (
+                        <p className="text-sm ml-7">총 {fileTypeInfo.pageCount}페이지</p>
+                      )}
+                      {fileTypeInfo.estimatedTime && (
+                        <p className="text-sm ml-7">예상 소요시간: {fileTypeInfo.estimatedTime}</p>
+                      )}
+                      {fileTypeInfo.warning && (
+                        <p className="text-sm ml-7 mt-1 font-medium text-orange-600">⚠️ {fileTypeInfo.warning}</p>
+                      )}
+                    </>
+                  )}
+                </div>
+              )}
             </div>
           )}
         </div>
