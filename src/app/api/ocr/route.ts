@@ -807,8 +807,8 @@ export async function POST(request: NextRequest) {
           try {
             const page = doc.loadPage(pageNum);
 
-            // 150 DPI로 이미지 생성 (72 DPI가 기본, 2배 스케일 = 144 DPI)
-            const scale = 2.0;
+            // 108 DPI로 이미지 생성 (72 DPI가 기본, 1.5배 스케일 = 108 DPI) - 속도 최적화
+            const scale = 1.5;
             const pixmap = page.toPixmap(
               mupdf.Matrix.scale(scale, scale),
               mupdf.ColorSpace.DeviceRGB,
@@ -826,9 +826,9 @@ export async function POST(request: NextRequest) {
         }
         console.log(`Image conversion completed in ${Date.now() - conversionStart}ms`);
 
-        // 2단계: Gemini Vision으로 직접 테이블 파싱 (5개씩 배치)
+        // 2단계: Gemini Vision으로 직접 테이블 파싱 (15개씩 배치 - 속도 최적화)
         const ocrStart = Date.now();
-        const batchSize = 5;
+        const batchSize = 15;
         const allTransactionsFromImages: TransactionRow[] = [];
 
         // 토큰 사용량 초기화
