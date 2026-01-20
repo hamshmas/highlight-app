@@ -716,11 +716,19 @@ export async function POST(request: NextRequest) {
           cacheHitCount: cached.hit_count + 1,
         });
 
+        // 디버그: 캐시 데이터 출력
+        console.log("Cached columns:", cached.columns);
+        if (cached.parsing_result.length > 0) {
+          console.log("Cached first transaction:", JSON.stringify(cached.parsing_result[0]));
+        }
+
         return NextResponse.json({
           success: true,
+          rawText: "(캐시에서 로드됨)",
           transactions: cached.parsing_result,
           columns: cached.columns,
           cached: true,
+          documentType: "image-based", // 캐시된 데이터는 대부분 이미지 기반
           message: `캐시에서 ${cached.parsing_result.length}개의 거래내역을 로드했습니다.`,
           aiCost: cached.ai_cost || { inputTokens: 0, outputTokens: 0, usd: 0, krw: 0 },
         });
@@ -842,6 +850,11 @@ export async function POST(request: NextRequest) {
         console.log(`Gemini Vision completed in ${Date.now() - ocrStart}ms`);
         console.log(`Total transactions from images: ${allTransactionsFromImages.length}`);
 
+        // 디버그: 첫 번째 거래 데이터 샘플 출력
+        if (allTransactionsFromImages.length > 0) {
+          console.log("Sample transaction (first):", JSON.stringify(allTransactionsFromImages[0]));
+        }
+
         // 이미지 기반 PDF는 Gemini Vision 결과를 직접 반환
         if (allTransactionsFromImages.length === 0) {
           // Storage 파일 정리
@@ -913,8 +926,15 @@ export async function POST(request: NextRequest) {
           tokenUsage: totalTokenUsage,
         });
 
+        // 디버그: 컬럼과 첫 번째 거래 출력
+        console.log("Returning columns:", columns);
+        if (uniqueTransactions.length > 0) {
+          console.log("First transaction keys:", Object.keys(uniqueTransactions[0]));
+        }
+
         return NextResponse.json({
           success: true,
+          rawText: "(Gemini Vision으로 이미지에서 직접 추출)",
           transactions: uniqueTransactions,
           columns,
           usedAiParsing: true,
@@ -1000,6 +1020,7 @@ export async function POST(request: NextRequest) {
 
       return NextResponse.json({
         success: true,
+        rawText: "(Gemini Vision으로 이미지에서 직접 추출)",
         transactions,
         columns,
         usedAiParsing: true,
