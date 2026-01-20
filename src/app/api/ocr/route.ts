@@ -826,15 +826,20 @@ export async function POST(request: NextRequest) {
         }
         console.log(`Image conversion completed in ${Date.now() - conversionStart}ms`);
 
-        // 2단계: Gemini Vision으로 직접 테이블 파싱 (15개씩 배치 - 속도 최적화)
+        // 2단계: Gemini Vision으로 직접 테이블 파싱 (10개씩 배치)
         const ocrStart = Date.now();
-        const batchSize = 15;
+        const batchSize = 10;
+        console.log(`Starting Gemini Vision parsing for ${pageImages.length} pages...`);
         const allTransactionsFromImages: TransactionRow[] = [];
 
         // 토큰 사용량 초기화
         resetTokenUsage();
 
         for (let batchStart = 0; batchStart < pageImages.length; batchStart += batchSize) {
+          const batchNum = Math.floor(batchStart / batchSize) + 1;
+          const totalBatches = Math.ceil(pageImages.length / batchSize);
+          console.log(`Batch ${batchNum}/${totalBatches} starting (pages ${batchStart + 1}-${Math.min(batchStart + batchSize, pageImages.length)})...`);
+
           const batch = pageImages.slice(batchStart, batchStart + batchSize);
 
           const batchPromises = batch.map(({ pageNum, base64 }) =>
@@ -842,9 +847,12 @@ export async function POST(request: NextRequest) {
           );
 
           const batchResults = await Promise.all(batchPromises);
+          let batchTransactionCount = 0;
           for (const transactions of batchResults) {
             allTransactionsFromImages.push(...transactions);
+            batchTransactionCount += transactions.length;
           }
+          console.log(`Batch ${batchNum}/${totalBatches} completed: ${batchTransactionCount} transactions`);
         }
 
         console.log(`Gemini Vision completed in ${Date.now() - ocrStart}ms`);
