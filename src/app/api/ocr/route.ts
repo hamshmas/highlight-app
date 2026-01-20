@@ -116,6 +116,33 @@ function getGeminiClient(): GoogleGenerativeAI | null {
   return new GoogleGenerativeAI(apiKey);
 }
 
+// OCR 텍스트 전처리: 날짜로 시작하지 않는 줄을 이전 줄에 병합
+function mergeOcrLines(text: string): string {
+  const lines = text.split('\n');
+  const merged: string[] = [];
+
+  // 날짜 패턴: YYYY.MM.DD, YYYY-MM-DD, YYYY/MM/DD, YY.MM.DD 등
+  const datePattern = /^\d{2,4}[.\-\/]\d{1,2}[.\-\/]\d{1,2}/;
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+
+    // 날짜로 시작하면 새 줄
+    if (datePattern.test(trimmed)) {
+      merged.push(trimmed);
+    } else if (merged.length > 0) {
+      // 날짜로 시작하지 않으면 이전 줄에 붙이기
+      merged[merged.length - 1] += ' ' + trimmed;
+    } else {
+      // 첫 줄인데 날짜가 아니면 (헤더 등) 그대로 추가
+      merged.push(trimmed);
+    }
+  }
+
+  return merged.join('\n');
+}
+
 // 텍스트를 청크로 분할 (날짜 경계 기준)
 function splitTextIntoChunks(text: string, chunkSize: number = 3500): string[] {
   const chunks: string[] = [];
@@ -476,9 +503,13 @@ async function parseWithAI(text: string): Promise<ParseResult | null> {
   try {
     const startTime = Date.now();
 
+    // OCR 텍스트 전처리: 날짜로 시작하지 않는 줄 병합
+    const mergedText = mergeOcrLines(text);
+    console.log(`OCR 줄 병합: ${text.split('\n').length}줄 → ${mergedText.split('\n').length}줄`);
+
     // 바로 AI 병렬 파싱 (샘플 파싱 생략)
-    console.log(`AI 병렬 파싱 시작 (${text.length}자)`);
-    const allTransactions = await parseFullTextWithAIParallel(text);
+    console.log(`AI 병렬 파싱 시작 (${mergedText.length}자)`);
+    const allTransactions = await parseFullTextWithAIParallel(mergedText);
     const elapsed = Date.now() - startTime;
     console.log(`AI 병렬 파싱 완료: ${elapsed}ms`);
 
