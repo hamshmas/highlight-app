@@ -712,7 +712,7 @@ export async function POST(request: NextRequest) {
 
           const batchPromises = batch.map(async ({ pageNum, base64 }) => {
             try {
-              const [result] = await visionClient.textDetection({
+              const [result] = await visionClient.documentTextDetection({
                 image: { content: base64 },
                 imageContext: { languageHints: ["ko", "en"] },
               });
@@ -736,7 +736,7 @@ export async function POST(request: NextRequest) {
       }
     } else {
       // 이미지의 경우
-      const [result] = await visionClient.textDetection({
+      const [result] = await visionClient.documentTextDetection({
         image: {
           content: base64Content,
         },
