@@ -840,17 +840,37 @@ export async function POST(request: NextRequest) {
         // 토큰 사용량 초기화
         resetTokenUsage();
 
-        // 첫 번째 배치에서 추출한 컬럼명 (이후 배치에서 일관성 유지용)
+        // 1단계: 첫 번째 페이지만 먼저 처리하여 컬럼명 추출
         let extractedColumns: string[] | undefined;
 
-        for (let batchStart = 0; batchStart < pageImages.length; batchStart += batchSize) {
+        if (pageImages.length > 0) {
+          console.log("Processing first page to extract column names...");
+          const firstPageResult = await parseTableImageWithGemini(
+            pageImages[0].base64,
+            pageImages[0].pageNum,
+            "image/png"
+          );
+
+          if (firstPageResult.length > 0) {
+            allTransactionsFromImages.push(...firstPageResult);
+            extractedColumns = Object.keys(firstPageResult[0]);
+            console.log(`First page: ${firstPageResult.length} transactions, columns: ${extractedColumns.join(", ")}`);
+          }
+        }
+
+        // 2단계: 나머지 페이지들을 배치로 처리 (첫 페이지에서 추출한 컬럼명 전달)
+        const remainingPages = pageImages.slice(1);
+
+        for (let batchStart = 0; batchStart < remainingPages.length; batchStart += batchSize) {
           const batchNum = Math.floor(batchStart / batchSize) + 1;
-          const totalBatches = Math.ceil(pageImages.length / batchSize);
-          console.log(`Batch ${batchNum}/${totalBatches} starting (pages ${batchStart + 1}-${Math.min(batchStart + batchSize, pageImages.length)})...`);
+          const totalBatches = Math.ceil(remainingPages.length / batchSize);
+          const pageStart = batchStart + 2; // 2페이지부터 시작
+          const pageEnd = Math.min(batchStart + batchSize + 1, remainingPages.length + 1);
+          console.log(`Batch ${batchNum}/${totalBatches} starting (pages ${pageStart}-${pageEnd})...`);
 
-          const batch = pageImages.slice(batchStart, batchStart + batchSize);
+          const batch = remainingPages.slice(batchStart, batchStart + batchSize);
 
-          // 첫 번째 배치 이후에는 추출한 컬럼명을 전달하여 일관성 유지
+          // 첫 페이지에서 추출한 컬럼명을 모든 페이지에 전달하여 일관성 유지
           const batchPromises = batch.map(({ pageNum, base64 }) =>
             parseTableImageWithGemini(base64, pageNum, "image/png", extractedColumns)
           );
@@ -862,12 +882,6 @@ export async function POST(request: NextRequest) {
             batchTransactionCount += transactions.length;
           }
           console.log(`Batch ${batchNum}/${totalBatches} completed: ${batchTransactionCount} transactions`);
-
-          // 첫 번째 배치 완료 후 컬럼명 추출 (이후 배치에서 사용)
-          if (!extractedColumns && allTransactionsFromImages.length > 0) {
-            extractedColumns = Object.keys(allTransactionsFromImages[0]);
-            console.log(`Extracted columns from first batch: ${extractedColumns.join(", ")}`);
-          }
         }
 
         console.log(`Gemini Vision completed in ${Date.now() - ocrStart}ms`);
