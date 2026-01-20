@@ -68,8 +68,10 @@ export default function Home() {
 
   // 파일 타입 정보 (업로드 전 안내용)
   const [fileTypeInfo, setFileTypeInfo] = useState<{
-    documentType: "text-based" | "image-based" | "image" | null;
+    documentType: "text-based" | "image-based" | "image" | "excel" | null;
     pageCount?: number;
+    sheetCount?: number;
+    rowCount?: number;
     message: string;
     estimatedTime: string | null;
     warning: string | null;
@@ -127,6 +129,8 @@ export default function Home() {
         setFileTypeInfo({
           documentType: data.documentType,
           pageCount: data.pageCount,
+          sheetCount: data.sheetCount,
+          rowCount: data.rowCount,
           message: data.message,
           estimatedTime: data.estimatedTime,
           warning: data.warning,
@@ -144,7 +148,7 @@ export default function Home() {
     e.preventDefault();
     setDragOver(false);
     const droppedFiles = Array.from(e.dataTransfer.files).filter((f) =>
-      /\.(pdf|png|jpg|jpeg)$/i.test(f.name)
+      /\.(pdf|png|jpg|jpeg|xlsx|xls)$/i.test(f.name)
     );
     if (droppedFiles.length > 0) {
       setFiles([droppedFiles[0]]);
@@ -870,7 +874,7 @@ export default function Home() {
         {/* 파일 업로드 */}
         <div className="bg-white rounded-lg shadow-md p-6 mb-6">
           <h2 className="text-lg font-semibold text-gray-700 mb-4">
-            파일 업로드 (PDF/이미지)
+            파일 업로드 (PDF/이미지/엑셀)
           </h2>
           <div
             className={`border-2 border-dashed rounded-lg p-8 text-center cursor-pointer transition ${
@@ -889,7 +893,7 @@ export default function Home() {
             <input
               id="fileInput"
               type="file"
-              accept=".pdf,.png,.jpg,.jpeg"
+              accept=".pdf,.png,.jpg,.jpeg,.xlsx,.xls"
               className="hidden"
               onChange={handleFileChange}
             />
@@ -897,7 +901,7 @@ export default function Home() {
               파일을 끌어다 놓거나 클릭하세요
             </p>
             <p className="text-sm text-gray-400">
-              지원 형식: .pdf, .png, .jpg, .jpeg
+              지원 형식: .pdf, .png, .jpg, .jpeg, .xlsx, .xls
             </p>
           </div>
 
@@ -922,9 +926,11 @@ export default function Home() {
                     ? "bg-gray-100 text-gray-600"
                     : fileTypeInfo.documentType === "text-based"
                       ? "bg-green-100 text-green-800"
-                      : fileTypeInfo.documentType === "image-based"
-                        ? "bg-yellow-100 text-yellow-800"
-                        : "bg-blue-100 text-blue-800"
+                      : fileTypeInfo.documentType === "excel"
+                        ? "bg-emerald-100 text-emerald-800"
+                        : fileTypeInfo.documentType === "image-based"
+                          ? "bg-yellow-100 text-yellow-800"
+                          : "bg-blue-100 text-blue-800"
                 }`}>
                   {fileTypeInfo.isChecking ? (
                     <div className="flex items-center gap-2">
@@ -941,6 +947,10 @@ export default function Home() {
                           <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
                           </svg>
+                        ) : fileTypeInfo.documentType === "excel" ? (
+                          <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 10h18M3 14h18m-9-4v8m-7 0h14a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                          </svg>
                         ) : (
                           <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
@@ -950,6 +960,9 @@ export default function Home() {
                       </div>
                       {fileTypeInfo.pageCount && (
                         <p className="text-sm ml-7">총 {fileTypeInfo.pageCount}페이지</p>
+                      )}
+                      {fileTypeInfo.rowCount && (
+                        <p className="text-sm ml-7">총 {fileTypeInfo.rowCount}행 (시트 {fileTypeInfo.sheetCount}개)</p>
                       )}
                       {fileTypeInfo.estimatedTime && (
                         <p className="text-sm ml-7">예상 소요시간: {fileTypeInfo.estimatedTime}</p>

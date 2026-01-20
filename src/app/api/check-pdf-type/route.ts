@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import * as mupdf from "mupdf";
+import * as XLSX from "xlsx";
 
 export const runtime = "nodejs";
 export const maxDuration = 30;
@@ -14,7 +15,26 @@ export async function POST(req: NextRequest) {
     }
 
     const fileName = file.name.toLowerCase();
-    const fileSize = file.size;
+
+    // 엑셀 파일인 경우
+    if (fileName.match(/\.(xlsx|xls)$/i)) {
+      const arrayBuffer = await file.arrayBuffer();
+      const workbook = XLSX.read(arrayBuffer, { type: "array" });
+      const sheetNames = workbook.SheetNames;
+      const firstSheet = workbook.Sheets[sheetNames[0]];
+      const range = XLSX.utils.decode_range(firstSheet["!ref"] || "A1");
+      const rowCount = range.e.r - range.s.r + 1;
+
+      return NextResponse.json({
+        fileType: "excel",
+        documentType: "excel",
+        sheetCount: sheetNames.length,
+        rowCount,
+        message: "엑셀 파일입니다. OCR 없이 바로 처리됩니다.",
+        estimatedTime: "약 1-5초",
+        warning: null,
+      });
+    }
 
     // 이미지 파일인 경우
     if (fileName.match(/\.(png|jpg|jpeg|gif|bmp|webp|tiff?)$/i)) {
@@ -34,7 +54,7 @@ export async function POST(req: NextRequest) {
         documentType: null,
         message: "지원하지 않는 파일 형식입니다.",
         estimatedTime: null,
-        warning: "PDF 또는 이미지 파일만 지원합니다.",
+        warning: "PDF, 이미지, 엑셀 파일만 지원합니다.",
       });
     }
 

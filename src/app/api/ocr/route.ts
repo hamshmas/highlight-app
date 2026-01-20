@@ -8,6 +8,7 @@ import { downloadFileFromStorage, deleteFileFromStorage } from "@/lib/storage";
 import * as mupdf from "mupdf";
 import { GoogleGenerativeAI } from "@google/generative-ai";
 import { parseWithBankRule } from "@/lib/bank-rules";
+import * as XLSX from "xlsx";
 
 // Route Segment Config
 export const maxDuration = 300; // 5분 타임아웃
@@ -739,6 +740,103 @@ export async function POST(request: NextRequest) {
         });
       }
       console.log(`Cache MISS for ${fileName}`);
+    }
+
+    // 엑셀 파일인 경우 직접 파싱 (OCR 불필요)
+    const isExcel = fileName.toLowerCase().match(/\.(xlsx|xls)$/);
+    if (isExcel) {
+      console.log("Processing Excel file directly...");
+
+      try {
+        const workbook = XLSX.read(arrayBuffer, { type: "array" });
+        const sheetName = workbook.SheetNames[0];
+        const sheet = workbook.Sheets[sheetName];
+
+        // 시트를 JSON으로 변환 (첫 행을 헤더로 사용)
+        const jsonData = XLSX.utils.sheet_to_json(sheet, { defval: "" }) as Record<string, unknown>[];
+
+        if (jsonData.length === 0) {
+          return NextResponse.json(
+            { error: "엑셀 파일에 데이터가 없습니다." },
+            { status: 400 }
+          );
+        }
+
+        // 컬럼명 추출 (첫 번째 행에서)
+        const columns = Object.keys(jsonData[0]);
+        console.log(`Excel columns: ${columns.join(", ")}`);
+
+        // 금액 필드를 숫자로 변환
+        const transactions = jsonData.map(row => {
+          const result: TransactionRow = { date: "", description: "", deposit: 0, withdrawal: 0, balance: 0 };
+          for (const [key, value] of Object.entries(row)) {
+            if (typeof value === "string") {
+              // 숫자 형식인지 확인 (쉼표, 원화 기호 제거)
+              const cleaned = value.replace(/[,원₩\s]/g, "");
+              if (/^-?\d+(\.\d+)?$/.test(cleaned)) {
+                result[key] = parseFloat(cleaned);
+              } else {
+                result[key] = value;
+              }
+            } else if (typeof value === "number") {
+              result[key] = value;
+            } else {
+              result[key] = String(value);
+            }
+          }
+          return result;
+        });
+
+        console.log(`Excel parsing completed: ${transactions.length} rows`);
+
+        // 캐시 저장
+        if (isCacheEnabled()) {
+          const fileHash = generateFileHash(arrayBuffer);
+          await saveParsing({
+            fileHash,
+            fileName,
+            fileSize,
+            parsingResult: transactions as Record<string, unknown>[],
+            columns,
+            userEmail,
+          });
+        }
+
+        // Storage 파일 정리
+        if (storagePath) {
+          deleteFileFromStorage(storagePath).catch(err =>
+            console.error("Failed to delete storage file:", err)
+          );
+        }
+
+        // 로그 기록
+        await logAction(userEmail, "ocr_extract", {
+          fileName,
+          fileSize,
+          transactionCount: transactions.length,
+          columns,
+          parsingMethod: "excel-direct",
+          documentType: "excel",
+        });
+
+        return NextResponse.json({
+          success: true,
+          rawText: "(엑셀 파일에서 직접 추출)",
+          transactions,
+          columns,
+          usedAiParsing: false,
+          parsingMethod: "excel-direct",
+          documentType: "excel",
+          message: `${transactions.length}개의 거래내역이 추출되었습니다. (엑셀)`,
+          aiCost: { inputTokens: 0, outputTokens: 0, usd: 0, krw: 0 },
+        });
+      } catch (excelError) {
+        console.error("Excel parsing error:", excelError);
+        return NextResponse.json(
+          { error: "엑셀 파일을 읽을 수 없습니다. 파일이 손상되었거나 지원하지 않는 형식입니다." },
+          { status: 400 }
+        );
+      }
     }
 
     // 버퍼 복사 (여러 라이브러리에서 사용하기 위해)
