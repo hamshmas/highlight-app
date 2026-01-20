@@ -60,6 +60,9 @@ export default function Home() {
   // AI 비용 상태
   const [aiCost, setAiCost] = useState<{ inputTokens: number; outputTokens: number; usd: number; krw: number } | null>(null);
 
+  // 문서 타입 (text-based, image-based, image)
+  const [documentType, setDocumentType] = useState<"text-based" | "image-based" | "image" | null>(null);
+
   // 캐시 무시 옵션
   const [forceRefresh, setForceRefresh] = useState(false);
 
@@ -213,6 +216,9 @@ export default function Home() {
       if (data.aiCost) {
         setAiCost(data.aiCost);
       }
+      if (data.documentType) {
+        setDocumentType(data.documentType);
+      }
       setOcrStep("verifying");
       setIsAiParsing(false);
       stopTimer();
@@ -348,6 +354,7 @@ export default function Home() {
     setCurrentOcrFile(null);
     setResult(null);
     setAiCost(null);
+    setDocumentType(null);
   };
 
   // OCR 처리 중단
@@ -463,6 +470,44 @@ export default function Home() {
               }`}
             >
               {result.message}
+            </div>
+          )}
+
+          {/* 문서 타입 정보 */}
+          {documentType && (
+            <div className={`mb-4 p-4 rounded-lg border ${
+              documentType === "text-based"
+                ? "bg-green-50 border-green-200"
+                : "bg-orange-50 border-orange-200"
+            }`}>
+              <div className={`flex items-center gap-2 ${
+                documentType === "text-based" ? "text-green-800" : "text-orange-800"
+              }`}>
+                {documentType === "text-based" ? (
+                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                  </svg>
+                ) : (
+                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
+                  </svg>
+                )}
+                <span className="font-medium">
+                  {documentType === "text-based" ? "텍스트 기반 PDF" :
+                   documentType === "image-based" ? "이미지/스캔 기반 PDF" : "이미지 파일"}
+                </span>
+              </div>
+              <div className={`mt-2 text-sm ${
+                documentType === "text-based" ? "text-green-700" : "text-orange-700"
+              }`}>
+                {documentType === "text-based" ? (
+                  <p>PDF에서 텍스트를 직접 추출했습니다. (OCR 불필요)</p>
+                ) : documentType === "image-based" ? (
+                  <p>스캔/이미지 PDF를 OCR로 텍스트를 추출했습니다.</p>
+                ) : (
+                  <p>이미지 파일을 OCR로 텍스트를 추출했습니다.</p>
+                )}
+              </div>
             </div>
           )}
 

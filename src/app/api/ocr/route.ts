@@ -621,6 +621,7 @@ export async function POST(request: NextRequest) {
     const isPdf = fileName.toLowerCase().endsWith(".pdf");
 
     let fullText = "";
+    let documentType: "text-based" | "image-based" | "image" = "image"; // 문서 타입
 
     console.log("OCR: Processing file:", fileName, "isPdf:", isPdf, "size:", fileSize);
 
@@ -648,6 +649,7 @@ export async function POST(request: NextRequest) {
 
       // 텍스트 기반 PDF인 경우 텍스트 직접 추출 (OCR 스킵)
       if (avgTextPerPage >= 100 && textRatio >= 0.7) {
+        documentType = "text-based";
         console.log(`Text-based PDF detected: avgTextPerPage=${avgTextPerPage}, textRatio=${textRatio}`);
         console.log("Extracting text directly from PDF (skipping OCR)...");
 
@@ -664,6 +666,7 @@ export async function POST(request: NextRequest) {
         console.log(`Direct text extraction completed: ${fullText.length} characters from ${pageCount} pages`);
       } else {
         // 이미지 기반 PDF: mupdf를 사용하여 PDF를 이미지로 변환 후 Vision OCR 사용
+        documentType = "image-based";
         console.log("Converting PDF to images for OCR using mupdf...");
 
         const maxPages = 50; // 최대 50페이지만 처리
@@ -818,6 +821,7 @@ export async function POST(request: NextRequest) {
         usedAiParsing: false,
         parsingMethod: "rule-based",
         bankName: ruleResult.bankRule?.bankName,
+        documentType: documentType,
         message: `${transactions.length}개의 거래내역이 추출되었습니다. (${ruleResult.bankRule?.bankName} 규칙 사용)`,
         aiCost: {
           inputTokens: 0,
@@ -920,6 +924,7 @@ export async function POST(request: NextRequest) {
       columns: columns,
       usedAiParsing: true,
       parsingMethod: "ai",
+      documentType: documentType,
       message: `${transactions.length}개의 거래내역이 추출되었습니다. (AI 파싱)`,
       aiCost: {
         inputTokens: tokenUsage.inputTokens,
