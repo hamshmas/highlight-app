@@ -886,17 +886,11 @@ export async function POST(request: NextRequest) {
           return true;
         });
 
-        // 컬럼 추출
-        const columns: string[] = [];
-        const seenColumns = new Set<string>();
-        for (const tx of uniqueTransactions) {
-          for (const key of Object.keys(tx)) {
-            if (!seenColumns.has(key)) {
-              columns.push(key);
-              seenColumns.add(key);
-            }
-          }
-        }
+        // 컬럼 추출 (첫 번째 거래에서만 - 일관성 보장)
+        const columns: string[] = uniqueTransactions.length > 0
+          ? Object.keys(uniqueTransactions[0])
+          : [];
+        console.log(`Columns from first transaction: ${columns.length} columns`);
 
         const cost = calculateCost(totalTokenUsage);
 
@@ -978,17 +972,10 @@ export async function POST(request: NextRequest) {
         );
       }
 
-      // 컬럼 추출
-      const columns: string[] = [];
-      const seenColumns = new Set<string>();
-      for (const tx of transactions) {
-        for (const key of Object.keys(tx)) {
-          if (!seenColumns.has(key)) {
-            columns.push(key);
-            seenColumns.add(key);
-          }
-        }
-      }
+      // 컬럼 추출 (첫 번째 거래에서만 - 일관성 보장)
+      const columns: string[] = transactions.length > 0
+        ? Object.keys(transactions[0])
+        : [];
 
       const cost = calculateCost(totalTokenUsage);
 
@@ -1133,31 +1120,11 @@ export async function POST(request: NextRequest) {
     const { transactions, tokenUsage, cost } = parseResult;
     console.log(`AI parsing successful: ${transactions.length} transactions`);
 
-    // 동적 컬럼 추출 (모든 거래에서 컬럼 통합)
-    const columns: string[] = [];
-    const seenColumns = new Set<string>();
-
-    if (transactions.length > 0) {
-      // 첫 번째 거래에서 기본 컬럼 순서 설정
-      for (const key of Object.keys(transactions[0])) {
-        if (!seenColumns.has(key)) {
-          columns.push(key);
-          seenColumns.add(key);
-        }
-      }
-
-      // 모든 거래에서 추가 컬럼 확인 (청크별로 컬럼이 다를 수 있음)
-      for (const tx of transactions) {
-        for (const key of Object.keys(tx)) {
-          if (!seenColumns.has(key)) {
-            columns.push(key);
-            seenColumns.add(key);
-          }
-        }
-      }
-
-      console.log(`Detected columns: ${columns.join(", ")}`);
-    }
+    // 컬럼 추출 (첫 번째 거래에서만 - 일관성 보장)
+    const columns: string[] = transactions.length > 0
+      ? Object.keys(transactions[0])
+      : [];
+    console.log(`Columns from first transaction: ${columns.length} columns - ${columns.join(", ")}`);
 
     // 캐시 저장 (활성화된 경우)
     if (isCacheEnabled()) {
