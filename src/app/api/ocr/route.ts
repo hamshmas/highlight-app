@@ -116,83 +116,12 @@ function getGeminiClient(): GoogleGenerativeAI | null {
   return new GoogleGenerativeAI(apiKey);
 }
 
-// 컬럼명 정규화 매핑
-const COLUMN_NORMALIZATION: Record<string, string> = {
-  // 날짜 관련
-  "날짜": "거래일자",
-  "일자": "거래일자",
-  "date": "거래일자",
-  "거래일": "거래일자",
-  "처리일자": "거래일자",
-  "거래날짜": "거래일자",
-
-  // 시간 관련
-  "시간": "거래시간",
-  "time": "거래시간",
-  "처리시간": "거래시간",
-
-  // 입금 관련
-  "입금": "입금금액",
-  "입금액": "입금금액",
-  "맡기신금액": "입금금액",
-  "deposit": "입금금액",
-  "입금(원)": "입금금액",
-  "맡긴금액": "입금금액",
-
-  // 출금 관련
-  "출금": "출금금액",
-  "출금액": "출금금액",
-  "찾으신금액": "출금금액",
-  "withdrawal": "출금금액",
-  "출금(원)": "출금금액",
-  "찾은금액": "출금금액",
-  "지급금액": "출금금액",
-
-  // 잔액 관련
-  "잔고": "잔액",
-  "거래후잔액": "잔액",
-  "balance": "잔액",
-  "잔액(원)": "잔액",
-  "현재잔액": "잔액",
-
-  // 적요/내용 관련
-  "내용": "적요",
-  "거래내용": "적요",
-  "비고": "적요",
-  "description": "적요",
-  "memo": "적요",
-  "메모": "적요",
-
-  // 거래점 관련
-  "지점": "거래점",
-  "거래처": "거래점",
-  "취급점": "거래점",
-  "처리점": "거래점",
-
-  // 거래종류 관련
-  "구분": "거래종류",
-  "거래구분": "거래종류",
-  "type": "거래종류",
-  "종류": "거래종류",
-};
-
-// 거래 데이터의 컬럼명을 정규화
-function normalizeTransactionColumns(transactions: TransactionRow[]): TransactionRow[] {
-  return transactions.map(tx => {
-    const normalized: TransactionRow = {};
-    for (const [key, value] of Object.entries(tx)) {
-      const normalizedKey = COLUMN_NORMALIZATION[key] || key;
-      normalized[normalizedKey] = value;
-    }
-    return normalized;
-  });
-}
-
 // Gemini Vision으로 테이블 이미지를 직접 파싱
 async function parseTableImageWithGemini(
   base64Image: string,
   pageNum: number,
-  mimeType: string = "image/png"
+  mimeType: string = "image/png",
+  expectedColumns?: string[] // 첫 페이지에서 추출한 컬럼명 (이후 페이지에서 일관성 유지용)
 ): Promise<TransactionRow[]> {
   const gemini = getGeminiClient();
   if (!gemini) return [];
@@ -205,12 +134,16 @@ async function parseTableImageWithGemini(
       },
     });
 
+    // 컬럼명 힌트 (첫 페이지 이후에만 적용)
+    const columnHint = expectedColumns && expectedColumns.length > 0
+      ? `\n- 반드시 다음 컬럼명을 사용: ${expectedColumns.join(", ")}`
+      : "\n- 컬럼명은 테이블 헤더 그대로 사용 (거래일자, 거래종류, 적요, 통화, 출금금액, 입금금액, 잔액, 거래점, 거래시간 등)";
+
     const prompt = `이 이미지는 은행 거래내역 테이블입니다. 테이블의 각 행을 JSON 배열로 추출하세요.
 
 규칙:
 - 테이블의 각 행을 하나의 JSON 객체로 변환
-- 헤더, 합계, 페이지번호, 안내문구 제외
-- 컬럼명은 테이블 헤더 그대로 사용 (거래일자, 거래종류, 적요, 통화, 출금금액, 입금금액, 잔액, 거래점, 거래시간 등)
+- 헤더, 합계, 페이지번호, 안내문구 제외${columnHint}
 - 금액은 숫자만 (쉼표 없이)
 - 셀 내 줄바꿈은 공백으로 연결 (예: "부산은행\\n0214" → "부산은행 0214")
 - 완전한 JSON 배열만 출력 (코드블록 없이)
@@ -907,6 +840,9 @@ export async function POST(request: NextRequest) {
         // 토큰 사용량 초기화
         resetTokenUsage();
 
+        // 첫 번째 배치에서 추출한 컬럼명 (이후 배치에서 일관성 유지용)
+        let extractedColumns: string[] | undefined;
+
         for (let batchStart = 0; batchStart < pageImages.length; batchStart += batchSize) {
           const batchNum = Math.floor(batchStart / batchSize) + 1;
           const totalBatches = Math.ceil(pageImages.length / batchSize);
@@ -914,8 +850,9 @@ export async function POST(request: NextRequest) {
 
           const batch = pageImages.slice(batchStart, batchStart + batchSize);
 
+          // 첫 번째 배치 이후에는 추출한 컬럼명을 전달하여 일관성 유지
           const batchPromises = batch.map(({ pageNum, base64 }) =>
-            parseTableImageWithGemini(base64, pageNum, "image/png")
+            parseTableImageWithGemini(base64, pageNum, "image/png", extractedColumns)
           );
 
           const batchResults = await Promise.all(batchPromises);
@@ -925,6 +862,12 @@ export async function POST(request: NextRequest) {
             batchTransactionCount += transactions.length;
           }
           console.log(`Batch ${batchNum}/${totalBatches} completed: ${batchTransactionCount} transactions`);
+
+          // 첫 번째 배치 완료 후 컬럼명 추출 (이후 배치에서 사용)
+          if (!extractedColumns && allTransactionsFromImages.length > 0) {
+            extractedColumns = Object.keys(allTransactionsFromImages[0]);
+            console.log(`Extracted columns from first batch: ${extractedColumns.join(", ")}`);
+          }
         }
 
         console.log(`Gemini Vision completed in ${Date.now() - ocrStart}ms`);
@@ -932,7 +875,7 @@ export async function POST(request: NextRequest) {
 
         // 디버그: 첫 번째 거래 데이터 샘플 출력
         if (allTransactionsFromImages.length > 0) {
-          console.log("Sample transaction (first, before normalization):", JSON.stringify(allTransactionsFromImages[0]));
+          console.log("Sample transaction (first):", JSON.stringify(allTransactionsFromImages[0]));
         }
 
         // 이미지 기반 PDF는 Gemini Vision 결과를 직접 반환
@@ -949,22 +892,11 @@ export async function POST(request: NextRequest) {
           );
         }
 
-        // 컬럼명 정규화 (페이지마다 다른 컬럼명을 통일)
-        const normalizedTransactions = normalizeTransactionColumns(allTransactionsFromImages);
-        console.log("Transactions normalized");
-        if (normalizedTransactions.length > 0) {
-          console.log("Sample transaction (after normalization):", JSON.stringify(normalizedTransactions[0]));
-        }
-
-        // 컬럼 추출 (모든 거래에서 사용된 컬럼의 합집합)
-        const columnSet = new Set<string>();
-        for (const tx of normalizedTransactions) {
-          for (const key of Object.keys(tx)) {
-            columnSet.add(key);
-          }
-        }
-        const columns = Array.from(columnSet);
-        console.log(`Columns from all transactions: ${columns.length} columns - ${columns.join(", ")}`);
+        // 컬럼 추출 (첫 번째 거래에서 - 프롬프트로 일관성 보장됨)
+        const columns: string[] = allTransactionsFromImages.length > 0
+          ? Object.keys(allTransactionsFromImages[0])
+          : [];
+        console.log(`Columns from first transaction: ${columns.length} columns - ${columns.join(", ")}`);
 
         const cost = calculateCost(totalTokenUsage);
 
@@ -975,7 +907,7 @@ export async function POST(request: NextRequest) {
             fileHash,
             fileName,
             fileSize,
-            parsingResult: normalizedTransactions as Record<string, unknown>[],
+            parsingResult: allTransactionsFromImages as Record<string, unknown>[],
             columns,
             tokenUsage: { ...totalTokenUsage },
             aiCost: { ...cost },
@@ -994,7 +926,7 @@ export async function POST(request: NextRequest) {
         await logAction(userEmail, "ocr_extract", {
           fileName,
           fileSize,
-          transactionCount: normalizedTransactions.length,
+          transactionCount: allTransactionsFromImages.length,
           columns,
           parsingMethod: "gemini-vision",
           documentType,
@@ -1004,19 +936,19 @@ export async function POST(request: NextRequest) {
 
         // 디버그: 컬럼과 첫 번째 거래 출력
         console.log("Returning columns:", columns);
-        if (normalizedTransactions.length > 0) {
-          console.log("First transaction keys:", Object.keys(normalizedTransactions[0]));
+        if (allTransactionsFromImages.length > 0) {
+          console.log("First transaction keys:", Object.keys(allTransactionsFromImages[0]));
         }
 
         return NextResponse.json({
           success: true,
           rawText: "(Gemini Vision으로 이미지에서 직접 추출)",
-          transactions: normalizedTransactions,
+          transactions: allTransactionsFromImages,
           columns,
           usedAiParsing: true,
           parsingMethod: "gemini-vision",
           documentType,
-          message: `${normalizedTransactions.length}개의 거래내역이 추출되었습니다. (Gemini Vision)`,
+          message: `${allTransactionsFromImages.length}개의 거래내역이 추출되었습니다. (Gemini Vision)`,
           aiCost: {
             inputTokens: totalTokenUsage.inputTokens,
             outputTokens: totalTokenUsage.outputTokens,
