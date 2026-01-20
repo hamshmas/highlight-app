@@ -116,6 +116,91 @@ function getGeminiClient(): GoogleGenerativeAI | null {
   return new GoogleGenerativeAI(apiKey);
 }
 
+// Gemini Vision으로 테이블 이미지를 직접 파싱
+async function parseTableImageWithGemini(
+  base64Image: string,
+  pageNum: number,
+  mimeType: string = "image/png"
+): Promise<TransactionRow[]> {
+  const gemini = getGeminiClient();
+  if (!gemini) return [];
+
+  try {
+    const model = gemini.getGenerativeModel({
+      model: "gemini-2.0-flash",
+      generationConfig: {
+        maxOutputTokens: 8192,
+      },
+    });
+
+    const prompt = `이 이미지는 은행 거래내역 테이블입니다. 테이블의 각 행을 JSON 배열로 추출하세요.
+
+규칙:
+- 테이블의 각 행을 하나의 JSON 객체로 변환
+- 헤더, 합계, 페이지번호, 안내문구 제외
+- 컬럼명은 테이블 헤더 그대로 사용 (거래일자, 거래종류, 적요, 통화, 출금금액, 입금금액, 잔액, 거래점, 거래시간 등)
+- 금액은 숫자만 (쉼표 없이)
+- 셀 내 줄바꿈은 공백으로 연결 (예: "부산은행\\n0214" → "부산은행 0214")
+- 완전한 JSON 배열만 출력 (코드블록 없이)
+
+JSON:`;
+
+    const result = await model.generateContent([
+      {
+        inlineData: {
+          mimeType,
+          data: base64Image,
+        },
+      },
+      { text: prompt },
+    ]);
+
+    const response = result.response.text();
+
+    // 토큰 사용량 추적
+    const usageMetadata = result.response.usageMetadata;
+    if (usageMetadata) {
+      addTokenUsage(usageMetadata.promptTokenCount || 0, usageMetadata.candidatesTokenCount || 0);
+    }
+
+    let jsonStr = response.trim();
+
+    // 코드블록 제거
+    const codeBlockMatch = jsonStr.match(/```(?:json)?\s*([\s\S]*?)```/);
+    if (codeBlockMatch) {
+      jsonStr = codeBlockMatch[1].trim();
+    }
+
+    // JSON 배열 추출
+    const jsonMatch = jsonStr.match(/\[[\s\S]*\]/);
+    if (!jsonMatch) {
+      console.log(`Page ${pageNum + 1}: No JSON array found in Gemini Vision response`);
+      return [];
+    }
+
+    const transactions = JSON.parse(jsonMatch[0]) as TransactionRow[];
+    console.log(`Page ${pageNum + 1}: Gemini Vision extracted ${transactions.length} transactions`);
+
+    // 금액 문자열을 숫자로 변환
+    return transactions.map(tx => {
+      const result = { ...tx };
+      for (const key of Object.keys(result)) {
+        const val = result[key];
+        if (typeof val === "string") {
+          const cleaned = val.replace(/[,원₩\s]/g, "");
+          if (/^\d+$/.test(cleaned) && cleaned.length > 0) {
+            result[key] = parseFloat(cleaned);
+          }
+        }
+      }
+      return result;
+    });
+  } catch (error) {
+    console.error(`Page ${pageNum + 1} Gemini Vision error:`, error);
+    return [];
+  }
+}
+
 // OCR 텍스트 전처리: 날짜로 시작하지 않는 줄을 이전 줄에 병합
 function mergeOcrLines(text: string): string {
   const lines = text.split('\n');
@@ -591,15 +676,14 @@ export async function POST(request: NextRequest) {
       arrayBuffer = await file.arrayBuffer();
     }
 
-    const visionClient = getVisionClient();
-    if (!visionClient) {
+    // Gemini API 확인 (이미지 기반 문서에 필요)
+    const geminiClient = getGeminiClient();
+    if (!geminiClient) {
       return NextResponse.json(
-        { error: "OCR 서비스가 설정되지 않았습니다. 관리자에게 문의하세요." },
+        { error: "AI 서비스(Gemini)가 설정되지 않았습니다. 관리자에게 문의하세요." },
         { status: 500 }
       );
     }
-
-    // Gemini API는 규칙 기반 파싱 실패 시에만 필요하므로 나중에 확인
 
     // forceRefresh인 경우 기존 캐시 삭제
     if (forceRefresh && isCacheEnabled()) {
@@ -734,66 +818,207 @@ export async function POST(request: NextRequest) {
         }
         console.log(`Image conversion completed in ${Date.now() - conversionStart}ms`);
 
-        // 2단계: Vision OCR 병렬 호출 (10개씩 배치로 처리)
+        // 2단계: Gemini Vision으로 직접 테이블 파싱 (5개씩 배치)
         const ocrStart = Date.now();
-        const batchSize = 10;
-        const allTexts: string[] = new Array(actualPageCount).fill("");
+        const batchSize = 5;
+        const allTransactionsFromImages: TransactionRow[] = [];
+
+        // 토큰 사용량 초기화
+        resetTokenUsage();
 
         for (let batchStart = 0; batchStart < pageImages.length; batchStart += batchSize) {
           const batch = pageImages.slice(batchStart, batchStart + batchSize);
 
-          const batchPromises = batch.map(async ({ pageNum, base64 }) => {
-            try {
-              const [result] = await visionClient.documentTextDetection({
-                image: { content: base64 },
-                imageContext: { languageHints: ["ko", "en"] },
-              });
+          const batchPromises = batch.map(({ pageNum, base64 }) =>
+            parseTableImageWithGemini(base64, pageNum, "image/png")
+          );
 
-              const pageText = result.fullTextAnnotation?.text || "";
-              if (pageText) {
-                allTexts[pageNum] = pageText;
-                console.log(`Page ${pageNum + 1}: extracted ${pageText.length} chars`);
-              }
-            } catch (pageError) {
-              console.error(`Error OCR page ${pageNum + 1}:`, pageError);
-            }
-          });
-
-          await Promise.all(batchPromises);
+          const batchResults = await Promise.all(batchPromises);
+          for (const transactions of batchResults) {
+            allTransactionsFromImages.push(...transactions);
+          }
         }
 
-        console.log(`OCR completed in ${Date.now() - ocrStart}ms`);
-        fullText = allTexts.filter(t => t).join("\n\n");
-        console.log(`OCR PDF result: extracted ${fullText.length} total chars from ${allTexts.filter(t => t).length} pages`);
+        console.log(`Gemini Vision completed in ${Date.now() - ocrStart}ms`);
+        console.log(`Total transactions from images: ${allTransactionsFromImages.length}`);
+
+        // 이미지 기반 PDF는 Gemini Vision 결과를 직접 반환
+        if (allTransactionsFromImages.length === 0) {
+          // Storage 파일 정리
+          if (storagePath) {
+            deleteFileFromStorage(storagePath).catch(err =>
+              console.error("Failed to delete storage file:", err)
+            );
+          }
+          return NextResponse.json(
+            { error: "이미지에서 거래내역을 추출할 수 없습니다. 테이블이 명확한지 확인해주세요." },
+            { status: 400 }
+          );
+        }
+
+        // 중복 제거
+        const seen = new Set<string>();
+        const uniqueTransactions = allTransactionsFromImages.filter(tx => {
+          const key = Object.keys(tx).sort().map(k => `${k}:${tx[k]}`).join("|");
+          if (seen.has(key)) return false;
+          seen.add(key);
+          return true;
+        });
+
+        // 컬럼 추출
+        const columns: string[] = [];
+        const seenColumns = new Set<string>();
+        for (const tx of uniqueTransactions) {
+          for (const key of Object.keys(tx)) {
+            if (!seenColumns.has(key)) {
+              columns.push(key);
+              seenColumns.add(key);
+            }
+          }
+        }
+
+        const cost = calculateCost(totalTokenUsage);
+
+        // 캐시 저장
+        if (isCacheEnabled()) {
+          const fileHash = generateFileHash(arrayBuffer);
+          await saveParsing({
+            fileHash,
+            fileName,
+            fileSize,
+            parsingResult: uniqueTransactions as Record<string, unknown>[],
+            columns,
+            tokenUsage: { ...totalTokenUsage },
+            aiCost: { ...cost },
+            userEmail,
+          });
+        }
+
+        // Storage 파일 정리
+        if (storagePath) {
+          deleteFileFromStorage(storagePath).catch(err =>
+            console.error("Failed to delete storage file:", err)
+          );
+        }
+
+        // 로그 기록
+        await logAction(userEmail, "ocr_extract", {
+          fileName,
+          fileSize,
+          transactionCount: uniqueTransactions.length,
+          columns,
+          parsingMethod: "gemini-vision",
+          documentType,
+          aiCost: cost,
+          tokenUsage: totalTokenUsage,
+        });
+
+        return NextResponse.json({
+          success: true,
+          transactions: uniqueTransactions,
+          columns,
+          usedAiParsing: true,
+          parsingMethod: "gemini-vision",
+          documentType,
+          message: `${uniqueTransactions.length}개의 거래내역이 추출되었습니다. (Gemini Vision)`,
+          aiCost: {
+            inputTokens: totalTokenUsage.inputTokens,
+            outputTokens: totalTokenUsage.outputTokens,
+            usd: cost.usd,
+            krw: cost.krw,
+          },
+        });
       }
     } else {
-      // 이미지의 경우
-      const [result] = await visionClient.documentTextDetection({
-        image: {
-          content: base64Content,
-        },
-        imageContext: {
-          languageHints: ["ko", "en"],
-        },
-      });
+      // 이미지의 경우 - Gemini Vision으로 직접 파싱
+      documentType = "image";
+      console.log("Processing image with Gemini Vision...");
 
-      console.log("OCR Image result:", result.fullTextAnnotation ? "has text" : "no text");
-      fullText = result.fullTextAnnotation?.text || "";
-    }
+      resetTokenUsage();
+      const transactions = await parseTableImageWithGemini(base64Content, 0, "image/png");
 
-    if (!fullText) {
-      console.log("OCR result: No text extracted from file:", fileName, "isPdf:", isPdf);
+      if (transactions.length === 0) {
+        // Storage 파일 정리
+        if (storagePath) {
+          deleteFileFromStorage(storagePath).catch(err =>
+            console.error("Failed to delete storage file:", err)
+          );
+        }
+        return NextResponse.json(
+          { error: "이미지에서 거래내역을 추출할 수 없습니다. 테이블이 명확한지 확인해주세요." },
+          { status: 400 }
+        );
+      }
+
+      // 컬럼 추출
+      const columns: string[] = [];
+      const seenColumns = new Set<string>();
+      for (const tx of transactions) {
+        for (const key of Object.keys(tx)) {
+          if (!seenColumns.has(key)) {
+            columns.push(key);
+            seenColumns.add(key);
+          }
+        }
+      }
+
+      const cost = calculateCost(totalTokenUsage);
+
+      // 캐시 저장
+      if (isCacheEnabled()) {
+        const fileHash = generateFileHash(arrayBuffer);
+        await saveParsing({
+          fileHash,
+          fileName,
+          fileSize,
+          parsingResult: transactions as Record<string, unknown>[],
+          columns,
+          tokenUsage: { ...totalTokenUsage },
+          aiCost: { ...cost },
+          userEmail,
+        });
+      }
+
       // Storage 파일 정리
       if (storagePath) {
         deleteFileFromStorage(storagePath).catch(err =>
           console.error("Failed to delete storage file:", err)
         );
       }
-      const errorMessage = isPdf
-        ? "PDF에서 텍스트를 추출할 수 없습니다. 파일이 암호화되었거나 손상되었을 수 있습니다. 다른 방법으로 PDF를 다시 저장해보세요."
-        : "이미지에서 텍스트를 추출할 수 없습니다. 이미지가 선명한지 확인해주세요.";
+
+      // 로그 기록
+      await logAction(userEmail, "ocr_extract", {
+        fileName,
+        fileSize,
+        transactionCount: transactions.length,
+        columns,
+        parsingMethod: "gemini-vision",
+        documentType,
+        aiCost: cost,
+        tokenUsage: totalTokenUsage,
+      });
+
+      return NextResponse.json({
+        success: true,
+        transactions,
+        columns,
+        usedAiParsing: true,
+        parsingMethod: "gemini-vision",
+        documentType,
+        message: `${transactions.length}개의 거래내역이 추출되었습니다. (Gemini Vision)`,
+        aiCost: {
+          inputTokens: totalTokenUsage.inputTokens,
+          outputTokens: totalTokenUsage.outputTokens,
+          usd: cost.usd,
+          krw: cost.krw,
+        },
+      });
+    }
+
+    // 텍스트 기반 PDF만 여기에 도달 (fullText 사용)
+    if (!fullText) {
       return NextResponse.json(
-        { error: errorMessage },
+        { error: "텍스트를 추출할 수 없습니다." },
         { status: 400 }
       );
     }
