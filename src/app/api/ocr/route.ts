@@ -1092,15 +1092,6 @@ export async function POST(request: NextRequest) {
     // 2단계: 규칙 기반 파싱 실패 시 AI 파싱
     console.log(`규칙 기반 파싱 실패: ${ruleResult.error || "알 수 없는 오류"}, AI 파싱으로 폴백...`);
 
-    // AI 파싱이 필요한 시점에서 Gemini API 확인
-    const geminiClient = getGeminiClient();
-    if (!geminiClient) {
-      return NextResponse.json(
-        { error: "AI 파싱 서비스가 설정되지 않았습니다. 관리자에게 문의하세요." },
-        { status: 500 }
-      );
-    }
-
     const parseResult = await parseWithAI(fullText);
 
     if (!parseResult || parseResult.transactions.length === 0) {
