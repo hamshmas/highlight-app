@@ -248,7 +248,7 @@ async function parseChunkWithAI(
 - 컬럼명은 원본 헤더 그대로 사용
 - 금액은 숫자만 (쉼표 없이)
 - 완전한 JSON 배열만 출력 (코드블록 없이)
-- OCR로 인해 한 거래가 여러 줄로 분리될 수 있음. 날짜로 시작하지 않는 줄은 이전 거래의 연속일 가능성이 높으니 병합하세요${columnHint}${sampleHint}
+- OCR로 인해 한 거래가 여러 줄로 분리될 수 있음. 새 거래는 반드시 완전한 날짜(YYYY.MM.DD 또는 YY.MM.DD 형식)로 시작함. 숫자만 있거나 은행명/지점코드만 있는 줄은 이전 거래의 연속이니 병합하세요${columnHint}${sampleHint}
 
 텍스트:
 ${chunkText}
