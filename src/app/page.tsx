@@ -66,6 +66,10 @@ export default function Home() {
   // 캐시 무시 옵션
   const [forceRefresh, setForceRefresh] = useState(false);
 
+  // 페이지네이션 상태
+  const [currentPage, setCurrentPage] = useState(1);
+  const itemsPerPage = 50;
+
   // 처리 시간 카운터
   const [elapsedTime, setElapsedTime] = useState(0);
   const timerRef = useRef<NodeJS.Timeout | null>(null);
@@ -207,6 +211,7 @@ export default function Home() {
       const data = await res.json();
 
       setOcrTransactions(data.transactions);
+      setCurrentPage(1); // 페이지 리셋
       setOcrRawText(data.rawText);
       if (data.columns && data.columns.length > 0) {
         setOcrColumns(data.columns);
@@ -598,12 +603,31 @@ export default function Home() {
               <h2 className="text-lg font-bold text-black">
                 추출된 거래내역 ({ocrTransactions.length}건)
               </h2>
-              <button
-                onClick={addTransaction}
-                className="px-4 py-2 bg-green-600 text-white rounded hover:bg-green-700 font-bold"
-              >
-                + 행 추가
-              </button>
+              <div className="flex items-center gap-2">
+                <span className="text-sm text-gray-600">
+                  페이지 {currentPage} / {Math.ceil(ocrTransactions.length / itemsPerPage)}
+                </span>
+                <button
+                  onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
+                  disabled={currentPage === 1}
+                  className="px-3 py-1 bg-gray-200 rounded hover:bg-gray-300 disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  이전
+                </button>
+                <button
+                  onClick={() => setCurrentPage(p => Math.min(Math.ceil(ocrTransactions.length / itemsPerPage), p + 1))}
+                  disabled={currentPage >= Math.ceil(ocrTransactions.length / itemsPerPage)}
+                  className="px-3 py-1 bg-gray-200 rounded hover:bg-gray-300 disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  다음
+                </button>
+                <button
+                  onClick={addTransaction}
+                  className="px-4 py-2 bg-green-600 text-white rounded hover:bg-green-700 font-bold"
+                >
+                  + 행 추가
+                </button>
+              </div>
             </div>
 
             <div className="overflow-auto max-h-[500px] border rounded" style={{ scrollbarWidth: 'auto', scrollbarColor: '#888 #f1f1f1' }}>
@@ -651,7 +675,10 @@ export default function Home() {
                   </tr>
                 </thead>
                 <tbody>
-                  {ocrTransactions.map((tx, index) => {
+                  {ocrTransactions
+                    .slice((currentPage - 1) * itemsPerPage, currentPage * itemsPerPage)
+                    .map((tx, pageIndex) => {
+                    const index = (currentPage - 1) * itemsPerPage + pageIndex;
                     // 입금/출금 컬럼 동적 탐지 (다양한 은행 필드명 지원)
                     const depositKeys = ["deposit", "입금", "입금금액", "맡기신금액", "입금액"];
                     const withdrawalKeys = ["withdrawal", "출금", "출금금액", "찾으신금액", "출금액"];
