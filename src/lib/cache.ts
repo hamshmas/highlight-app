@@ -1,5 +1,6 @@
 import crypto from "crypto";
 import { createClient, SupabaseClient } from "@supabase/supabase-js";
+import { getKSTTimestamp } from "./supabase";
 
 let supabaseCache: SupabaseClient | null = null;
 
@@ -98,6 +99,7 @@ export async function saveParsing(params: {
         expires_at: expiresAt.toISOString(),
         user_email: params.userEmail || null,
         hit_count: 0,
+        created_at_kst: getKSTTimestamp(),
       },
       {
         onConflict: "file_hash",
