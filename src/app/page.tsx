@@ -685,20 +685,15 @@ export default function Home() {
                   <tr className="bg-gray-300">
                     <th className="border p-2 text-center w-10 font-bold text-black">#</th>
                     {ocrColumns.map((col) => {
-                      // 입금/출금/잔액 컬럼 동적 탐지 (모든 은행 필드명 지원)
-                      const depositColNames = ["deposit", "입금", "입금금액", "맡기신금액", "입금액"];
-                      const withdrawalColNames = ["withdrawal", "출금", "출금금액", "찾으신금액", "출금액"];
-                      const balanceColNames = ["balance", "잔액", "거래후잔액", "통장잔액", "거래후 잔액", "거래 후 잔액"];
-                      const amountColNames = ["거래금액", "금액", "amount"];
-                      const dateColNames = ["date", "time", "거래일시", "거래일자", "거래시간"];
-                      const descColNames = ["description", "counterparty", "memo", "적요", "내용", "기재내용", "거래내용", "거래기록사항", "메모"];
+                      // 입금/출금/잔액 컬럼 동적 탐지 (부분 문자열 매칭으로 다양한 엑셀 형식 지원)
+                      const normalized = col.replace(/\s+/g, "").toLowerCase();
 
-                      const isDepositCol = depositColNames.includes(col);
-                      const isWithdrawalCol = withdrawalColNames.includes(col);
-                      const isBalanceCol = balanceColNames.includes(col);
-                      const isAmountCol = amountColNames.includes(col);
-                      const isDateCol = dateColNames.includes(col);
-                      const isDescCol = descColNames.includes(col);
+                      const isDepositCol = (normalized.includes("입금") || normalized.includes("맡기신") || normalized === "deposit") && !normalized.includes("출금");
+                      const isWithdrawalCol = normalized.includes("출금") || normalized.includes("찾으신") || normalized.includes("지급") || normalized === "withdrawal";
+                      const isBalanceCol = normalized.includes("잔액") || normalized.includes("잔고") || normalized === "balance";
+                      const isAmountCol = (normalized.includes("금액") || normalized === "amount") && !isDepositCol && !isWithdrawalCol && !isBalanceCol;
+                      const isDateCol = normalized.includes("일시") || normalized.includes("일자") || normalized.includes("날짜") || normalized.includes("시간") || normalized === "date" || normalized === "time";
+                      const isDescCol = normalized.includes("적요") || normalized.includes("내용") || normalized.includes("기재") || normalized.includes("메모") || normalized.includes("비고") || normalized === "description" || normalized === "memo";
 
                       return (
                         <th
@@ -728,23 +723,25 @@ export default function Home() {
                     .slice((currentPage - 1) * itemsPerPage, currentPage * itemsPerPage)
                     .map((tx, pageIndex) => {
                     const index = (currentPage - 1) * itemsPerPage + pageIndex;
-                    // 입금/출금 컬럼 동적 탐지 (다양한 은행 필드명 지원)
-                    const depositKeys = ["deposit", "입금", "입금금액", "맡기신금액", "입금액"];
-                    const withdrawalKeys = ["withdrawal", "출금", "출금금액", "찾으신금액", "출금액"];
-
+                    // 입금/출금 금액 추출 (부분 문자열 매칭으로 다양한 엑셀 형식 지원)
                     let depositAmount = 0;
                     let withdrawalAmount = 0;
 
-                    for (const key of depositKeys) {
-                      if (tx[key] !== undefined && Number(tx[key]) > 0) {
-                        depositAmount = Number(tx[key]);
-                        break;
-                      }
-                    }
-                    for (const key of withdrawalKeys) {
-                      if (tx[key] !== undefined && Number(tx[key]) > 0) {
-                        withdrawalAmount = Number(tx[key]);
-                        break;
+                    for (const col of ocrColumns) {
+                      const normalizedCol = col.replace(/\s+/g, "").toLowerCase();
+                      const value = tx[col];
+                      if (value === undefined || value === null || value === "" || value === 0) continue;
+
+                      const numValue = typeof value === "number" ? value : parseFloat(String(value).replace(/[,\s]/g, ""));
+                      if (isNaN(numValue) || numValue <= 0) continue;
+
+                      const isDeposit = (normalizedCol.includes("입금") || normalizedCol.includes("맡기신") || normalizedCol === "deposit") && !normalizedCol.includes("출금");
+                      const isWithdrawal = normalizedCol.includes("출금") || normalizedCol.includes("찾으신") || normalizedCol.includes("지급") || normalizedCol === "withdrawal";
+
+                      if (isDeposit) {
+                        depositAmount = Math.max(depositAmount, numValue);
+                      } else if (isWithdrawal) {
+                        withdrawalAmount = Math.max(withdrawalAmount, numValue);
                       }
                     }
 
@@ -763,16 +760,13 @@ export default function Home() {
                           {index + 1}
                         </td>
                         {ocrColumns.map((col) => {
-                          // 입금/출금/잔액 컬럼 동적 탐지 (모든 은행 필드명 지원)
-                          const depositColNames = ["deposit", "입금", "입금금액", "맡기신금액", "입금액"];
-                          const withdrawalColNames = ["withdrawal", "출금", "출금금액", "찾으신금액", "출금액"];
-                          const balanceColNames = ["balance", "잔액", "거래후잔액", "통장잔액", "거래후 잔액", "거래 후 잔액"];
-                          const amountColNames = ["거래금액", "금액", "amount"];
+                          // 입금/출금/잔액 컬럼 동적 탐지 (부분 문자열 매칭으로 다양한 엑셀 형식 지원)
+                          const normalizedCol = col.replace(/\s+/g, "").toLowerCase();
 
-                          const isDepositCol = depositColNames.includes(col);
-                          const isWithdrawalCol = withdrawalColNames.includes(col);
-                          const isBalanceCol = balanceColNames.includes(col);
-                          const isAmountCol = amountColNames.includes(col);
+                          const isDepositCol = (normalizedCol.includes("입금") || normalizedCol.includes("맡기신") || normalizedCol === "deposit") && !normalizedCol.includes("출금");
+                          const isWithdrawalCol = normalizedCol.includes("출금") || normalizedCol.includes("찾으신") || normalizedCol.includes("지급") || normalizedCol === "withdrawal";
+                          const isBalanceCol = normalizedCol.includes("잔액") || normalizedCol.includes("잔고") || normalizedCol === "balance";
+                          const isAmountCol = (normalizedCol.includes("금액") || normalizedCol === "amount") && !isDepositCol && !isWithdrawalCol && !isBalanceCol;
                           const isNumeric = isDepositCol || isWithdrawalCol || isBalanceCol || isAmountCol;
 
                           const value = tx[col];
@@ -800,8 +794,8 @@ export default function Home() {
                                   "text-left text-black"
                                 }`}
                                 placeholder={
-                                  col === "date" || col === "거래일시" || col === "거래일자" ? "YYYY.MM.DD" :
-                                  col === "time" || col === "거래시간" ? "HH:MM" :
+                                  normalizedCol.includes("일시") || normalizedCol.includes("일자") || normalizedCol.includes("날짜") || normalizedCol === "date" ? "YYYY.MM.DD" :
+                                  normalizedCol.includes("시간") || normalizedCol === "time" ? "HH:MM" :
                                   isNumeric ? "0" :
                                   ""
                                 }
