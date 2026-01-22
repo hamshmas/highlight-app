@@ -752,21 +752,6 @@ export async function POST(request: NextRequest) {
         const sheetName = workbook.SheetNames[0];
         const sheet = workbook.Sheets[sheetName];
 
-        // 시트 범위 확인
-        const range = XLSX.utils.decode_range(sheet["!ref"] || "A1");
-
-        // 헤더 행에서 컬럼명을 순서대로 추출
-        const columns: string[] = [];
-        for (let col = range.s.c; col <= range.e.c; col++) {
-          const cellAddress = XLSX.utils.encode_cell({ r: range.s.r, c: col });
-          const cell = sheet[cellAddress];
-          const headerValue = cell ? String(cell.v || "").trim() : "";
-          if (headerValue) {
-            columns.push(headerValue);
-          }
-        }
-        console.log(`Excel columns (ordered): ${columns.join(", ")}`);
-
         // 시트를 JSON으로 변환 (첫 행을 헤더로 사용)
         const jsonData = XLSX.utils.sheet_to_json(sheet, { defval: "" }) as Record<string, unknown>[];
 
@@ -777,26 +762,26 @@ export async function POST(request: NextRequest) {
           );
         }
 
-        // 금액 필드를 숫자로 변환하면서 컬럼 순서 유지
+        // 컬럼명 추출 (첫 번째 행에서)
+        const columns = Object.keys(jsonData[0]);
+        console.log(`Excel columns: ${columns.join(", ")}`);
+
+        // 금액 필드를 숫자로 변환
         const transactions = jsonData.map(row => {
           const result: TransactionRow = { date: "", description: "", deposit: 0, withdrawal: 0, balance: 0 };
-          // 컬럼 순서대로 처리
-          for (const colName of columns) {
-            const value = row[colName];
-            if (value === undefined) continue;
-
+          for (const [key, value] of Object.entries(row)) {
             if (typeof value === "string") {
               // 숫자 형식인지 확인 (쉼표, 원화 기호 제거)
               const cleaned = value.replace(/[,원₩\s]/g, "");
               if (/^-?\d+(\.\d+)?$/.test(cleaned)) {
-                result[colName] = parseFloat(cleaned);
+                result[key] = parseFloat(cleaned);
               } else {
-                result[colName] = value;
+                result[key] = value;
               }
             } else if (typeof value === "number") {
-              result[colName] = value;
+              result[key] = value;
             } else {
-              result[colName] = String(value);
+              result[key] = String(value);
             }
           }
           return result;

@@ -38,65 +38,6 @@ const COLUMN_LABELS: Record<string, string> = {
   category: "분류",
 };
 
-// 컬럼 타입 판별 함수 (부분 문자열 매칭으로 다양한 엑셀 형식 지원)
-function isDepositColumn(col: string): boolean {
-  const normalized = col.replace(/\s+/g, "").toLowerCase();
-  const keywords = ["deposit", "입금", "맡기신"];
-  return keywords.some(k => normalized.includes(k)) && !normalized.includes("출금");
-}
-
-function isWithdrawalColumn(col: string): boolean {
-  const normalized = col.replace(/\s+/g, "").toLowerCase();
-  const keywords = ["withdrawal", "출금", "찾으신", "지급"];
-  return keywords.some(k => normalized.includes(k));
-}
-
-function isBalanceColumn(col: string): boolean {
-  const normalized = col.replace(/\s+/g, "").toLowerCase();
-  const keywords = ["balance", "잔액", "잔고"];
-  return keywords.some(k => normalized.includes(k));
-}
-
-function isAmountColumn(col: string): boolean {
-  const normalized = col.replace(/\s+/g, "").toLowerCase();
-  const keywords = ["거래금액", "금액", "amount"];
-  return keywords.some(k => normalized.includes(k)) && !isDepositColumn(col) && !isWithdrawalColumn(col) && !isBalanceColumn(col);
-}
-
-function isDateColumn(col: string): boolean {
-  const normalized = col.replace(/\s+/g, "").toLowerCase();
-  const keywords = ["date", "time", "일시", "일자", "날짜", "시간"];
-  return keywords.some(k => normalized.includes(k));
-}
-
-function isDescColumn(col: string): boolean {
-  const normalized = col.replace(/\s+/g, "").toLowerCase();
-  const keywords = ["description", "counterparty", "memo", "적요", "내용", "기재", "거래내용", "거래기록", "메모", "비고", "상대방"];
-  return keywords.some(k => normalized.includes(k));
-}
-
-// 입금/출금 금액 추출 함수
-function extractAmounts(tx: TransactionRow, columns: string[]): { deposit: number; withdrawal: number } {
-  let depositAmount = 0;
-  let withdrawalAmount = 0;
-
-  for (const col of columns) {
-    const value = tx[col];
-    if (value === undefined || value === null || value === "" || value === 0) continue;
-
-    const numValue = typeof value === "number" ? value : parseFloat(String(value).replace(/[,\s]/g, ""));
-    if (isNaN(numValue) || numValue <= 0) continue;
-
-    if (isDepositColumn(col)) {
-      depositAmount = Math.max(depositAmount, numValue);
-    } else if (isWithdrawalColumn(col)) {
-      withdrawalAmount = Math.max(withdrawalAmount, numValue);
-    }
-  }
-
-  return { deposit: depositAmount, withdrawal: withdrawalAmount };
-}
-
 export default function Home() {
   const { data: session, status } = useSession();
   const [files, setFiles] = useState<File[]>([]);
@@ -744,26 +685,34 @@ export default function Home() {
                   <tr className="bg-gray-300">
                     <th className="border p-2 text-center w-10 font-bold text-black">#</th>
                     {ocrColumns.map((col) => {
-                      const isDeposit = isDepositColumn(col);
-                      const isWithdrawal = isWithdrawalColumn(col);
-                      const isBalance = isBalanceColumn(col);
-                      const isAmount = isAmountColumn(col);
-                      const isDate = isDateColumn(col);
-                      const isDesc = isDescColumn(col);
+                      // 입금/출금/잔액 컬럼 동적 탐지 (모든 은행 필드명 지원)
+                      const depositColNames = ["deposit", "입금", "입금금액", "맡기신금액", "입금액"];
+                      const withdrawalColNames = ["withdrawal", "출금", "출금금액", "찾으신금액", "출금액"];
+                      const balanceColNames = ["balance", "잔액", "거래후잔액", "통장잔액", "거래후 잔액", "거래 후 잔액"];
+                      const amountColNames = ["거래금액", "금액", "amount"];
+                      const dateColNames = ["date", "time", "거래일시", "거래일자", "거래시간"];
+                      const descColNames = ["description", "counterparty", "memo", "적요", "내용", "기재내용", "거래내용", "거래기록사항", "메모"];
+
+                      const isDepositCol = depositColNames.includes(col);
+                      const isWithdrawalCol = withdrawalColNames.includes(col);
+                      const isBalanceCol = balanceColNames.includes(col);
+                      const isAmountCol = amountColNames.includes(col);
+                      const isDateCol = dateColNames.includes(col);
+                      const isDescCol = descColNames.includes(col);
 
                       return (
                         <th
                           key={col}
                           className={`border p-2 font-bold ${
-                            isDeposit ? "text-blue-700 text-right" :
-                            isWithdrawal ? "text-red-700 text-right" :
-                            isBalance ? "text-green-700 text-right" :
-                            isAmount ? "text-purple-700 text-right" :
+                            isDepositCol ? "text-blue-700 text-right" :
+                            isWithdrawalCol ? "text-red-700 text-right" :
+                            isBalanceCol ? "text-green-700 text-right" :
+                            isAmountCol ? "text-purple-700 text-right" :
                             "text-left text-black"
                           } ${
-                            isDate ? "w-28" :
-                            isDeposit || isWithdrawal || isBalance || isAmount ? "w-28" :
-                            isDesc ? "min-w-32" :
+                            isDateCol ? "w-28" :
+                            isDepositCol || isWithdrawalCol || isBalanceCol || isAmountCol ? "w-28" :
+                            isDescCol ? "min-w-32" :
                             "w-20"
                           }`}
                         >
@@ -779,11 +728,28 @@ export default function Home() {
                     .slice((currentPage - 1) * itemsPerPage, currentPage * itemsPerPage)
                     .map((tx, pageIndex) => {
                     const index = (currentPage - 1) * itemsPerPage + pageIndex;
-                    // 새로운 헬퍼 함수로 입금/출금 금액 추출
-                    const amounts = extractAmounts(tx, ocrColumns);
-                    const maxAmount = Math.max(amounts.deposit, amounts.withdrawal);
-                    const isHighlighted = threshold && maxAmount >= parseInt(threshold);
+                    // 입금/출금 컬럼 동적 탐지 (다양한 은행 필드명 지원)
+                    const depositKeys = ["deposit", "입금", "입금금액", "맡기신금액", "입금액"];
+                    const withdrawalKeys = ["withdrawal", "출금", "출금금액", "찾으신금액", "출금액"];
 
+                    let depositAmount = 0;
+                    let withdrawalAmount = 0;
+
+                    for (const key of depositKeys) {
+                      if (tx[key] !== undefined && Number(tx[key]) > 0) {
+                        depositAmount = Number(tx[key]);
+                        break;
+                      }
+                    }
+                    for (const key of withdrawalKeys) {
+                      if (tx[key] !== undefined && Number(tx[key]) > 0) {
+                        withdrawalAmount = Number(tx[key]);
+                        break;
+                      }
+                    }
+
+                    const maxAmount = Math.max(depositAmount, withdrawalAmount);
+                    const isHighlighted = threshold && maxAmount >= parseInt(threshold);
                     return (
                       <tr
                         key={index}
@@ -797,11 +763,17 @@ export default function Home() {
                           {index + 1}
                         </td>
                         {ocrColumns.map((col) => {
-                          const isDeposit = isDepositColumn(col);
-                          const isWithdrawal = isWithdrawalColumn(col);
-                          const isBalance = isBalanceColumn(col);
-                          const isAmount = isAmountColumn(col);
-                          const isNumeric = isDeposit || isWithdrawal || isBalance || isAmount;
+                          // 입금/출금/잔액 컬럼 동적 탐지 (모든 은행 필드명 지원)
+                          const depositColNames = ["deposit", "입금", "입금금액", "맡기신금액", "입금액"];
+                          const withdrawalColNames = ["withdrawal", "출금", "출금금액", "찾으신금액", "출금액"];
+                          const balanceColNames = ["balance", "잔액", "거래후잔액", "통장잔액", "거래후 잔액", "거래 후 잔액"];
+                          const amountColNames = ["거래금액", "금액", "amount"];
+
+                          const isDepositCol = depositColNames.includes(col);
+                          const isWithdrawalCol = withdrawalColNames.includes(col);
+                          const isBalanceCol = balanceColNames.includes(col);
+                          const isAmountCol = amountColNames.includes(col);
+                          const isNumeric = isDepositCol || isWithdrawalCol || isBalanceCol || isAmountCol;
 
                           const value = tx[col];
                           const displayValue = isNumeric && typeof value === "number" && value !== 0
@@ -820,15 +792,16 @@ export default function Home() {
                                   updateTransaction(index, col, newValue);
                                 }}
                                 className={`w-full px-2 py-1 border rounded font-medium ${
-                                  isDeposit ? "text-right text-blue-700" :
-                                  isWithdrawal ? "text-right text-red-700" :
-                                  isBalance ? "text-right text-green-700" :
-                                  isAmount ? "text-right text-purple-700" :
+                                  isDepositCol ? "text-right text-blue-700" :
+                                  isWithdrawalCol ? "text-right text-red-700" :
+                                  isBalanceCol ? "text-right text-green-700" :
+                                  isAmountCol ? "text-right text-purple-700" :
                                   isNumeric ? "text-right text-black" :
                                   "text-left text-black"
                                 }`}
                                 placeholder={
-                                  isDateColumn(col) ? "YYYY.MM.DD" :
+                                  col === "date" || col === "거래일시" || col === "거래일자" ? "YYYY.MM.DD" :
+                                  col === "time" || col === "거래시간" ? "HH:MM" :
                                   isNumeric ? "0" :
                                   ""
                                 }
