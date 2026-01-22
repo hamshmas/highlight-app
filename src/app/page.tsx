@@ -723,20 +723,20 @@ export default function Home() {
                     .slice((currentPage - 1) * itemsPerPage, currentPage * itemsPerPage)
                     .map((tx, pageIndex) => {
                     const index = (currentPage - 1) * itemsPerPage + pageIndex;
-                    // 입금/출금 금액 추출 (부분 문자열 매칭으로 다양한 엑셀 형식 지원)
+                    // 입금/출금 금액 추출 (트랜잭션 객체의 실제 키를 사용)
                     let depositAmount = 0;
                     let withdrawalAmount = 0;
 
-                    for (const col of ocrColumns) {
-                      const normalizedCol = col.replace(/\s+/g, "").toLowerCase();
-                      const value = tx[col];
+                    for (const key of Object.keys(tx)) {
+                      const normalizedKey = key.replace(/\s+/g, "").toLowerCase();
+                      const value = tx[key];
                       if (value === undefined || value === null || value === "" || value === 0) continue;
 
                       const numValue = typeof value === "number" ? value : parseFloat(String(value).replace(/[,\s]/g, ""));
                       if (isNaN(numValue) || numValue <= 0) continue;
 
-                      const isDeposit = (normalizedCol.includes("입금") || normalizedCol.includes("맡기신") || normalizedCol === "deposit") && !normalizedCol.includes("출금");
-                      const isWithdrawal = normalizedCol.includes("출금") || normalizedCol.includes("찾으신") || normalizedCol.includes("지급") || normalizedCol === "withdrawal";
+                      const isDeposit = (normalizedKey.includes("입금") || normalizedKey.includes("맡기신") || normalizedKey === "deposit") && !normalizedKey.includes("출금");
+                      const isWithdrawal = normalizedKey.includes("출금") || normalizedKey.includes("찾으신") || normalizedKey.includes("지급") || normalizedKey === "withdrawal";
 
                       if (isDeposit) {
                         depositAmount = Math.max(depositAmount, numValue);
