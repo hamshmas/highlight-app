@@ -66,6 +66,10 @@ export default function Home() {
   // 캐시 무시 옵션
   const [forceRefresh, setForceRefresh] = useState(false);
 
+  // 수동 컬럼 선택 (엑셀 파일의 다양한 형식 지원)
+  const [selectedDepositColumn, setSelectedDepositColumn] = useState<string>("");
+  const [selectedWithdrawalColumn, setSelectedWithdrawalColumn] = useState<string>("");
+
   // 파일 타입 정보 (업로드 전 안내용)
   const [fileTypeInfo, setFileTypeInfo] = useState<{
     documentType: "text-based" | "image-based" | "image" | "excel" | null;
@@ -595,7 +599,7 @@ export default function Home() {
 
           {/* 설정 */}
           <div className="bg-white rounded-lg shadow-md p-6 mb-6">
-            <div className="grid grid-cols-2 gap-6">
+            <div className="grid grid-cols-2 gap-6 mb-4">
               <div>
                 <label className="block text-sm font-bold text-black mb-2">
                   기준 금액 (만원)
@@ -626,6 +630,49 @@ export default function Home() {
                     </option>
                   ))}
                 </select>
+              </div>
+            </div>
+
+            {/* 수동 컬럼 선택 (엑셀 파일용) */}
+            <div className="border-t pt-4">
+              <p className="text-sm font-bold text-gray-600 mb-3">
+                컬럼 자동 감지가 안 될 경우 수동 선택:
+              </p>
+              <div className="grid grid-cols-2 gap-6">
+                <div>
+                  <label className="block text-sm font-bold text-blue-700 mb-2">
+                    입금 컬럼
+                  </label>
+                  <select
+                    value={selectedDepositColumn}
+                    onChange={(e) => setSelectedDepositColumn(e.target.value)}
+                    className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-black"
+                  >
+                    <option value="">자동 감지</option>
+                    {ocrColumns.map((col) => (
+                      <option key={col} value={col}>
+                        {col}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-sm font-bold text-red-700 mb-2">
+                    출금 컬럼
+                  </label>
+                  <select
+                    value={selectedWithdrawalColumn}
+                    onChange={(e) => setSelectedWithdrawalColumn(e.target.value)}
+                    className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-black"
+                  >
+                    <option value="">자동 감지</option>
+                    {ocrColumns.map((col) => (
+                      <option key={col} value={col}>
+                        {col}
+                      </option>
+                    ))}
+                  </select>
+                </div>
               </div>
             </div>
           </div>
@@ -688,8 +735,26 @@ export default function Home() {
                       // 입금/출금/잔액 컬럼 동적 탐지 (부분 문자열 매칭으로 다양한 엑셀 형식 지원)
                       const normalized = col.replace(/\s+/g, "").toLowerCase();
 
-                      const isDepositCol = (normalized.includes("입금") || normalized.includes("맡기신") || normalized === "deposit") && !normalized.includes("출금");
-                      const isWithdrawalCol = normalized.includes("출금") || normalized.includes("찾으신") || normalized.includes("지급") || normalized === "withdrawal";
+                      // 한국 은행 엑셀의 다양한 컬럼명 지원
+                      const isDepositCol = (
+                        normalized.includes("입금") ||
+                        normalized.includes("맡기신") ||
+                        normalized.includes("수입") ||
+                        normalized.includes("대변") ||
+                        normalized.includes("들어온") ||
+                        normalized.includes("적립") ||
+                        normalized === "deposit" ||
+                        normalized === "credit"
+                      ) && !normalized.includes("출금") && !normalized.includes("지출");
+                      const isWithdrawalCol =
+                        normalized.includes("출금") ||
+                        normalized.includes("찾으신") ||
+                        normalized.includes("지급") ||
+                        normalized.includes("지출") ||
+                        normalized.includes("차변") ||
+                        normalized.includes("나간") ||
+                        normalized === "withdrawal" ||
+                        normalized === "debit";
                       const isBalanceCol = normalized.includes("잔액") || normalized.includes("잔고") || normalized === "balance";
                       const isAmountCol = (normalized.includes("금액") || normalized === "amount") && !isDepositCol && !isWithdrawalCol && !isBalanceCol;
                       const isDateCol = normalized.includes("일시") || normalized.includes("일자") || normalized.includes("날짜") || normalized.includes("시간") || normalized === "date" || normalized === "time";
@@ -723,26 +788,72 @@ export default function Home() {
                     .slice((currentPage - 1) * itemsPerPage, currentPage * itemsPerPage)
                     .map((tx, pageIndex) => {
                     const index = (currentPage - 1) * itemsPerPage + pageIndex;
-                    // 입금/출금 금액 추출 (트랜잭션 객체의 실제 키를 사용)
+                    // 입금/출금 금액 추출
                     let depositAmount = 0;
                     let withdrawalAmount = 0;
 
-                    for (const key of Object.keys(tx)) {
-                      const normalizedKey = key.replace(/\s+/g, "").toLowerCase();
-                      const value = tx[key];
-                      if (value === undefined || value === null || value === "" || value === 0) continue;
-
-                      const numValue = typeof value === "number" ? value : parseFloat(String(value).replace(/[,\s]/g, ""));
-                      if (isNaN(numValue) || numValue <= 0) continue;
-
-                      const isDeposit = (normalizedKey.includes("입금") || normalizedKey.includes("맡기신") || normalizedKey === "deposit") && !normalizedKey.includes("출금");
-                      const isWithdrawal = normalizedKey.includes("출금") || normalizedKey.includes("찾으신") || normalizedKey.includes("지급") || normalizedKey === "withdrawal";
-
-                      if (isDeposit) {
-                        depositAmount = Math.max(depositAmount, numValue);
-                      } else if (isWithdrawal) {
-                        withdrawalAmount = Math.max(withdrawalAmount, numValue);
+                    // 수동 선택된 컬럼이 있으면 해당 컬럼 사용
+                    if (selectedDepositColumn || selectedWithdrawalColumn) {
+                      if (selectedDepositColumn) {
+                        const value = tx[selectedDepositColumn];
+                        if (value !== undefined && value !== null && value !== "" && value !== 0) {
+                          const numValue = typeof value === "number" ? value : parseFloat(String(value).replace(/[,\s]/g, ""));
+                          if (!isNaN(numValue) && numValue > 0) {
+                            depositAmount = numValue;
+                          }
+                        }
                       }
+                      if (selectedWithdrawalColumn) {
+                        const value = tx[selectedWithdrawalColumn];
+                        if (value !== undefined && value !== null && value !== "" && value !== 0) {
+                          const numValue = typeof value === "number" ? value : parseFloat(String(value).replace(/[,\s]/g, ""));
+                          if (!isNaN(numValue) && numValue > 0) {
+                            withdrawalAmount = numValue;
+                          }
+                        }
+                      }
+                    } else {
+                      // 자동 감지 모드: 트랜잭션 객체의 실제 키를 사용
+                      for (const key of Object.keys(tx)) {
+                        const normalizedKey = key.replace(/\s+/g, "").toLowerCase();
+                        const value = tx[key];
+                        if (value === undefined || value === null || value === "" || value === 0) continue;
+
+                        const numValue = typeof value === "number" ? value : parseFloat(String(value).replace(/[,\s]/g, ""));
+                        if (isNaN(numValue) || numValue <= 0) continue;
+
+                        // 한국 은행 엑셀의 다양한 컬럼명 지원
+                        const isDeposit = (
+                          normalizedKey.includes("입금") ||
+                          normalizedKey.includes("맡기신") ||
+                          normalizedKey.includes("수입") ||
+                          normalizedKey.includes("대변") ||
+                          normalizedKey.includes("들어온") ||
+                          normalizedKey.includes("적립") ||
+                          normalizedKey === "deposit" ||
+                          normalizedKey === "credit"
+                        ) && !normalizedKey.includes("출금") && !normalizedKey.includes("지출");
+                        const isWithdrawal =
+                          normalizedKey.includes("출금") ||
+                          normalizedKey.includes("찾으신") ||
+                          normalizedKey.includes("지급") ||
+                          normalizedKey.includes("지출") ||
+                          normalizedKey.includes("차변") ||
+                          normalizedKey.includes("나간") ||
+                          normalizedKey === "withdrawal" ||
+                          normalizedKey === "debit";
+
+                        if (isDeposit) {
+                          depositAmount = Math.max(depositAmount, numValue);
+                        } else if (isWithdrawal) {
+                          withdrawalAmount = Math.max(withdrawalAmount, numValue);
+                        }
+                      }
+                    }
+
+                    // 디버그: 첫 번째 행에서 감지된 금액 출력
+                    if (index === 0) {
+                      console.log("Highlight debug - columns:", Object.keys(tx), "selectedDeposit:", selectedDepositColumn, "selectedWithdrawal:", selectedWithdrawalColumn, "deposit:", depositAmount, "withdrawal:", withdrawalAmount);
                     }
 
                     const maxAmount = Math.max(depositAmount, withdrawalAmount);
@@ -763,8 +874,26 @@ export default function Home() {
                           // 입금/출금/잔액 컬럼 동적 탐지 (부분 문자열 매칭으로 다양한 엑셀 형식 지원)
                           const normalizedCol = col.replace(/\s+/g, "").toLowerCase();
 
-                          const isDepositCol = (normalizedCol.includes("입금") || normalizedCol.includes("맡기신") || normalizedCol === "deposit") && !normalizedCol.includes("출금");
-                          const isWithdrawalCol = normalizedCol.includes("출금") || normalizedCol.includes("찾으신") || normalizedCol.includes("지급") || normalizedCol === "withdrawal";
+                          // 한국 은행 엑셀의 다양한 컬럼명 지원
+                          const isDepositCol = (
+                            normalizedCol.includes("입금") ||
+                            normalizedCol.includes("맡기신") ||
+                            normalizedCol.includes("수입") ||
+                            normalizedCol.includes("대변") ||
+                            normalizedCol.includes("들어온") ||
+                            normalizedCol.includes("적립") ||
+                            normalizedCol === "deposit" ||
+                            normalizedCol === "credit"
+                          ) && !normalizedCol.includes("출금") && !normalizedCol.includes("지출");
+                          const isWithdrawalCol =
+                            normalizedCol.includes("출금") ||
+                            normalizedCol.includes("찾으신") ||
+                            normalizedCol.includes("지급") ||
+                            normalizedCol.includes("지출") ||
+                            normalizedCol.includes("차변") ||
+                            normalizedCol.includes("나간") ||
+                            normalizedCol === "withdrawal" ||
+                            normalizedCol === "debit";
                           const isBalanceCol = normalizedCol.includes("잔액") || normalizedCol.includes("잔고") || normalizedCol === "balance";
                           const isAmountCol = (normalizedCol.includes("금액") || normalizedCol === "amount") && !isDepositCol && !isWithdrawalCol && !isBalanceCol;
                           const isNumeric = isDepositCol || isWithdrawalCol || isBalanceCol || isAmountCol;
