@@ -22,12 +22,19 @@ export async function POST(request: NextRequest) {
       color,
       fileName,
       columns,
+      accountInfo,
     }: {
       transactions: TransactionRow[];
       threshold: number;
       color: string;
       fileName: string;
       columns: string[];
+      accountInfo?: {
+        bankName: string;
+        accountHolder: string;
+        accountNumber: string;
+        queryPeriod: string;
+      };
     } = body;
 
     if (!transactions || transactions.length === 0) {
@@ -47,16 +54,53 @@ export async function POST(request: NextRequest) {
     const workbook = new ExcelJS.Workbook();
     const worksheet = workbook.addWorksheet("거래내역");
 
-    // 동적 헤더 설정
-    worksheet.columns = effectiveColumns.map((col) => ({
-      header: col,
-      key: col,
+    // 계좌 정보가 있으면 상단에 표시
+    const hasAccountInfo = accountInfo && (
+      accountInfo.bankName ||
+      accountInfo.accountHolder ||
+      accountInfo.accountNumber ||
+      accountInfo.queryPeriod
+    );
+
+    if (hasAccountInfo) {
+      // 계좌 정보 행 추가
+      if (accountInfo.bankName) {
+        const row = worksheet.addRow(["금융기관", accountInfo.bankName]);
+        row.getCell(1).font = { bold: true };
+        row.getCell(1).fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFD0E8FF" } };
+      }
+      if (accountInfo.accountHolder) {
+        const row = worksheet.addRow(["계좌주명", accountInfo.accountHolder]);
+        row.getCell(1).font = { bold: true };
+        row.getCell(1).fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFD0E8FF" } };
+      }
+      if (accountInfo.accountNumber) {
+        const row = worksheet.addRow(["계좌번호", accountInfo.accountNumber]);
+        row.getCell(1).font = { bold: true };
+        row.getCell(1).fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFD0E8FF" } };
+      }
+      if (accountInfo.queryPeriod) {
+        const row = worksheet.addRow(["조회기간", accountInfo.queryPeriod]);
+        row.getCell(1).font = { bold: true };
+        row.getCell(1).fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFD0E8FF" } };
+      }
+      // 빈 줄 추가
+      worksheet.addRow([]);
+    }
+
+    // 동적 헤더 설정 (컬럼 너비만 설정, 헤더는 수동 추가)
+    const colWidths = effectiveColumns.map((col) => ({
       width: col.includes("금액") || col.includes("잔액") || col.includes("입금") || col.includes("출금") ? 15 :
              col.includes("일") || col.includes("date") ? 15 : 25,
     }));
 
-    // 헤더 스타일
-    const headerRow = worksheet.getRow(1);
+    // 컬럼 너비 설정
+    effectiveColumns.forEach((col, idx) => {
+      worksheet.getColumn(idx + 1).width = colWidths[idx].width;
+    });
+
+    // 헤더 행 추가
+    const headerRow = worksheet.addRow(effectiveColumns);
     headerRow.font = { bold: true };
     headerRow.fill = {
       type: "pattern",
@@ -89,10 +133,8 @@ export async function POST(request: NextRequest) {
     // 데이터 추가 및 하이라이트
     let highlightedRows = 0;
     for (const tx of transactions) {
-      const rowData: Record<string, unknown> = {};
-      for (const col of effectiveColumns) {
-        rowData[col] = tx[col] ?? "";
-      }
+      // 배열 형식으로 데이터 생성 (컬럼 순서대로)
+      const rowData = effectiveColumns.map(col => tx[col] ?? "");
       const row = worksheet.addRow(rowData);
 
       // 동적 금액 판별로 하이라이트
@@ -112,12 +154,12 @@ export async function POST(request: NextRequest) {
         highlightedRows++;
       }
 
-      // 금액 컬럼 포맷
-      for (const col of effectiveColumns) {
+      // 금액 컬럼 포맷 (인덱스 기반)
+      effectiveColumns.forEach((col, idx) => {
         if (isAmountColumn(col) && typeof tx[col] === "number" && tx[col] > 0) {
-          row.getCell(col).numFmt = "#,##0";
+          row.getCell(idx + 1).numFmt = "#,##0";
         }
-      }
+      });
     }
 
     // 작업 로그 기록

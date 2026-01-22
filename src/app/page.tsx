@@ -70,6 +70,12 @@ export default function Home() {
   const [selectedDepositColumn, setSelectedDepositColumn] = useState<string>("");
   const [selectedWithdrawalColumn, setSelectedWithdrawalColumn] = useState<string>("");
 
+  // 엑셀 상단 표시용 계좌 정보
+  const [bankName, setBankName] = useState<string>("");
+  const [accountHolder, setAccountHolder] = useState<string>("");
+  const [accountNumber, setAccountNumber] = useState<string>("");
+  const [queryPeriod, setQueryPeriod] = useState<string>("");
+
   // 파일 타입 정보 (업로드 전 안내용)
   const [fileTypeInfo, setFileTypeInfo] = useState<{
     documentType: "text-based" | "image-based" | "image" | "excel" | null;
@@ -372,6 +378,13 @@ export default function Home() {
           color: color,
           fileName: currentOcrFile?.name || "ocr_result",
           columns: ocrColumns,
+          // 계좌 정보 (엑셀 상단에 표시)
+          accountInfo: {
+            bankName: bankName || "",
+            accountHolder: accountHolder || "",
+            accountNumber: accountNumber || "",
+            queryPeriod: queryPeriod || "",
+          },
         }),
       });
 
@@ -597,7 +610,56 @@ export default function Home() {
             </details>
           </div>
 
-          {/* 설정 */}
+          {/* 계좌 정보 (엑셀 상단에 표시) */}
+          <div className="bg-white rounded-lg shadow-md p-6 mb-6">
+            <h3 className="text-sm font-bold text-gray-700 mb-4">📋 계좌 정보 (엑셀 상단에 표시됨)</h3>
+            <div className="grid grid-cols-2 gap-4 mb-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-600 mb-1">금융기관</label>
+                <input
+                  type="text"
+                  value={bankName}
+                  onChange={(e) => setBankName(e.target.value)}
+                  placeholder="예: 국민은행"
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-black"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-600 mb-1">계좌주명</label>
+                <input
+                  type="text"
+                  value={accountHolder}
+                  onChange={(e) => setAccountHolder(e.target.value)}
+                  placeholder="예: 홍길동"
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-black"
+                />
+              </div>
+            </div>
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-600 mb-1">계좌번호</label>
+                <input
+                  type="text"
+                  value={accountNumber}
+                  onChange={(e) => setAccountNumber(e.target.value)}
+                  placeholder="예: 123-456-789012"
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-black"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-600 mb-1">조회기간</label>
+                <input
+                  type="text"
+                  value={queryPeriod}
+                  onChange={(e) => setQueryPeriod(e.target.value)}
+                  placeholder="예: 2024.01.01 ~ 2024.12.31"
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-black"
+                />
+              </div>
+            </div>
+          </div>
+
+          {/* 하이라이트 설정 */}
           <div className="bg-white rounded-lg shadow-md p-6 mb-6">
             <div className="grid grid-cols-2 gap-6 mb-4">
               <div>
