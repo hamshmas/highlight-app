@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
+import { authOptions } from "@/app/api/auth/[...nextauth]/route";
 import { ImageAnnotatorClient } from "@google-cloud/vision";
 import { GoogleAuth } from "google-auth-library";
 import { logAction } from "@/lib/supabase";
@@ -608,7 +609,7 @@ async function parseWithAI(text: string): Promise<ParseResult | null> {
 }
 
 export async function POST(request: NextRequest) {
-  const session = await getServerSession();
+  const session = await getServerSession(authOptions);
   if (!session) {
     return NextResponse.json({ error: "로그인이 필요합니다" }, { status: 401 });
   }
@@ -757,30 +758,81 @@ export async function POST(request: NextRequest) {
     const isPdf = fileName.toLowerCase().endsWith(".pdf");
     const isExcel = fileName.toLowerCase().match(/\.(xlsx|xls)$/);
 
-    // 엑셀 파일인 경우: 텍스트 추출
+    // 엑셀 파일인 경우: 직접 JSON 변환 (빠름) + AI 컬럼 감지
     if (isExcel) {
-      console.log("Processing Excel file with Gemini AI...");
+      console.log("Processing Excel file with direct parsing...");
+      const startTime = Date.now();
 
       try {
         const workbook = XLSX.read(arrayBuffer, { type: "array" });
         const sheetName = workbook.SheetNames[0];
         const sheet = workbook.Sheets[sheetName];
 
-        // 시트를 텍스트로 변환 (Gemini에 전달할 형식)
-        const textData = XLSX.utils.sheet_to_csv(sheet, { FS: "\t", RS: "\n" });
+        // 직접 JSON으로 변환 (즉시 완료)
+        const rawData = XLSX.utils.sheet_to_json(sheet, { header: 1 }) as unknown[][];
 
-        if (!textData || textData.trim().length === 0) {
+        if (!rawData || rawData.length < 2) {
           return NextResponse.json(
             { error: "엑셀 파일에 데이터가 없습니다." },
             { status: 400 }
           );
         }
 
-        console.log(`Excel text extracted: ${textData.length} characters`);
-        console.log(`First 500 chars: ${textData.substring(0, 500)}`);
+        console.log(`Excel direct parse: ${rawData.length} rows extracted in ${Date.now() - startTime}ms`);
 
-        fullText = textData;
-        documentType = "excel";
+        // 헤더 행 자동 감지 (날짜, 거래, 입금, 출금 등 키워드로 찾기)
+        const headerKeywords = ["날짜", "거래일", "입금", "출금", "잔액", "적요", "내용", "금액", "거래내역"];
+        let headerRowIndex = 0;
+
+        for (let i = 0; i < Math.min(rawData.length, 20); i++) {
+          const row = rawData[i];
+          if (!row) continue;
+
+          const rowText = row.map(cell => String(cell || "").toLowerCase()).join(" ");
+          const matchCount = headerKeywords.filter(keyword => rowText.includes(keyword)).length;
+
+          if (matchCount >= 2) {
+            headerRowIndex = i;
+            console.log(`Header row detected at index ${i}: ${row.slice(0, 5).join(", ")}`);
+            break;
+          }
+        }
+
+        // 헤더 행과 데이터 행 분리
+        const headers = (rawData[headerRowIndex] as unknown[]).map(h => String(h || "").trim()).filter(h => h);
+        const dataRows = rawData.slice(headerRowIndex + 1);
+
+        // 데이터를 객체 배열로 변환
+        const transactions = dataRows
+          .filter(row => row && row.length > 0 && row.some(cell => cell !== null && cell !== undefined && cell !== ""))
+          .map(row => {
+            const obj: Record<string, unknown> = {};
+            headers.forEach((header, idx) => {
+              if (header && row[idx] !== undefined && row[idx] !== null) {
+                obj[String(header).trim()] = row[idx];
+              }
+            });
+            return obj;
+          })
+          .filter(obj => Object.keys(obj).length > 0);
+
+        console.log(`Excel parsed: ${transactions.length} transactions with columns: ${headers.join(", ")}`);
+
+        // 캐시 저장
+        if (isCacheEnabled()) {
+          const fileHash = generateFileHash(arrayBuffer);
+          await saveParsing({
+            fileHash,
+            fileName,
+            fileSize,
+            parsingResult: transactions as Record<string, unknown>[],
+            columns: headers.filter(h => h),
+            tokenUsage: { inputTokens: 0, outputTokens: 0 },
+            aiCost: { usd: 0, krw: 0 },
+            userEmail,
+          });
+          console.log(`Cached Excel parsing result for ${fileName}`);
+        }
 
         // Storage 파일 정리
         if (storagePath) {
@@ -788,6 +840,44 @@ export async function POST(request: NextRequest) {
             console.error("Failed to delete storage file:", err)
           );
         }
+
+        // 작업 로그 기록
+        await logAction(userEmail, "ocr_extract", {
+          fileName,
+          fileSize,
+          transactionCount: transactions.length,
+          columns: headers,
+          parsingMethod: "excel-direct",
+          documentType: "excel",
+          aiCost: { usd: 0, krw: 0 },
+        });
+
+        const elapsed = Date.now() - startTime;
+        console.log(`Excel processing completed in ${elapsed}ms`);
+
+        // 카카오 사용자 사용량 증가
+        if (provider === "kakao") {
+          const { incrementUsage } = await import("@/lib/usage");
+          await incrementUsage(userId, provider);
+          console.log(`Usage incremented for Kakao user: ${userId} (excel direct)`);
+        }
+
+        return NextResponse.json({
+          success: true,
+          rawText: "(엑셀 직접 파싱)",
+          transactions,
+          columns: headers.filter(h => h),
+          usedAiParsing: false,
+          parsingMethod: "excel-direct",
+          documentType: "excel",
+          message: `${transactions.length}개의 거래내역이 추출되었습니다. (${elapsed}ms)`,
+          aiCost: {
+            inputTokens: 0,
+            outputTokens: 0,
+            usd: 0,
+            krw: 0,
+          },
+        });
       } catch (excelError) {
         console.error("Excel parsing error:", excelError);
         return NextResponse.json(
