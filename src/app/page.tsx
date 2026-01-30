@@ -309,7 +309,12 @@ export default function Home() {
               <button onClick={() => signOut()} className="text-sm text-red-600 hover:text-red-800">로그아웃</button>
             </div>
           </div>
-          <p className="text-sm text-gray-500 mt-2">스캔/이미지 PDF를 업로드하면 OCR로 텍스트를 추출하고 AI가 거래내역을 파싱합니다.</p>
+          <p className="text-sm text-gray-500 mt-2">
+            {usage?.isUnlimited
+              ? "스캔/이미지 PDF를 업로드하면 OCR로 텍스트를 추출하고 AI가 거래내역을 파싱합니다."
+              : "PDF, 이미지, 엑셀 파일을 업로드하면 자동으로 거래내역을 추출합니다."
+            }
+          </p>
           <div className="mt-4">
             <a href="/bank-rules" className="inline-flex items-center gap-2 px-4 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 transition text-sm font-medium">
               <DocumentIcon />
@@ -365,7 +370,15 @@ export default function Home() {
           disabled={!ocr.isIdle}
           className={`w-full py-4 rounded-lg text-white font-medium transition ${!ocr.isIdle ? "bg-gray-400 cursor-not-allowed" : "bg-blue-600 hover:bg-blue-700"}`}
         >
-          {ocr.isExtracting ? (ocr.isAiParsing ? `AI 파싱 중... (${timer.elapsedTime}초)` : `OCR 처리 중... (${timer.elapsedTime}초)`) : "OCR 추출 시작"}
+          {ocr.isExtracting
+            ? (ocr.isAiParsing
+              ? `분석 중... (${timer.elapsedTime}초)`
+              : usage?.isUnlimited
+                ? `OCR 처리 중... (${timer.elapsedTime}초)`
+                : `텍스트 추출 중... (${timer.elapsedTime}초)`
+            )
+            : usage?.isUnlimited ? "OCR 추출 시작" : "거래내역 추출 시작"
+          }
         </button>
 
         {/* 결과 메시지 */}
@@ -381,7 +394,14 @@ export default function Home() {
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
                 <SpinnerIcon />
-                <span className="font-medium">{ocr.isAiParsing ? "AI 파싱 중..." : "OCR 텍스트 추출 중..."}</span>
+                <span className="font-medium">
+                  {ocr.isAiParsing
+                    ? "분석 중..."
+                    : usage?.isUnlimited
+                      ? "OCR 텍스트 추출 중..."
+                      : "텍스트 추출 중..."
+                  }
+                </span>
                 <span className="text-sm">({timer.elapsedTime}초)</span>
               </div>
               <button onClick={ocr.abort} className="px-4 py-2 bg-red-500 text-white text-sm font-medium rounded hover:bg-red-600 transition">중단</button>

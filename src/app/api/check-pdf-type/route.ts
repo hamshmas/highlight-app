@@ -30,7 +30,7 @@ export async function POST(req: NextRequest) {
         documentType: "excel",
         sheetCount: sheetNames.length,
         rowCount,
-        message: "엑셀 파일입니다. OCR 없이 바로 처리됩니다.",
+        message: "엑셀 파일입니다.",
         estimatedTime: "약 1-5초",
         warning: null,
       });
@@ -41,7 +41,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({
         fileType: "image",
         documentType: "image",
-        message: "이미지 파일입니다. Gemini Vision으로 처리됩니다.",
+        message: "이미지 파일입니다.",
         estimatedTime: "약 10-30초",
         warning: null,
       });
@@ -107,7 +107,7 @@ export async function POST(req: NextRequest) {
         fileType: "pdf",
         documentType: "image-based",
         pageCount,
-        message: "스캔/이미지 기반 PDF입니다. AI Vision으로 처리됩니다.",
+        message: "스캔/이미지 기반 PDF입니다.",
         estimatedTime,
         warning: pageCount > 20
           ? `${pageCount}페이지 문서입니다. 처리에 시간이 걸릴 수 있습니다.`
