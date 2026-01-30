@@ -1,6 +1,6 @@
 {
   "name": "highlight-app",
-  "version": "0.1.0",
+  "version": "1.0.0-20260130",
   "private": true,
   "scripts": {
     "dev": "next dev",
@@ -13,6 +13,7 @@
     "@google-cloud/vision": "^5.3.4",
     "@google/generative-ai": "^0.24.1",
     "@supabase/supabase-js": "^2.90.1",
+    "@tanstack/react-virtual": "^3.13.18",
     "canvas": "^3.2.1",
     "exceljs": "^4.4.0",
     "mupdf": "^1.27.0",
