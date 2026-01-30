@@ -129,7 +129,7 @@ async function parseTableImageWithGemini(
 
   try {
     const model = gemini.getGenerativeModel({
-      model: "gemini-2.0-flash",
+      model: "gemini-2.5-flash",
       generationConfig: {
         maxOutputTokens: 8192,
       },
@@ -343,7 +343,7 @@ async function parseChunkWithAI(
 
   try {
     const model = gemini.getGenerativeModel({
-      model: "gemini-2.0-flash",
+      model: "gemini-2.5-flash",
       generationConfig: {
         maxOutputTokens: 16384, // 충분한 출력 토큰 확보
       },
