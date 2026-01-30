@@ -747,6 +747,13 @@ export async function POST(request: NextRequest) {
           console.log("Cached first transaction:", JSON.stringify(cached.parsing_result[0]));
         }
 
+        // 카카오 사용자 사용량 증가 (캐시 히트도 1회 사용으로 카운트)
+        if (provider === "kakao") {
+          const { incrementUsage } = await import("@/lib/usage");
+          await incrementUsage(userId, provider);
+          console.log(`Usage incremented for Kakao user: ${userId} (cache hit)`);
+        }
+
         return NextResponse.json({
           success: true,
           rawText: "(캐시에서 로드됨)",
@@ -1125,74 +1132,9 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // 거래내역 파싱
+    // 거래내역 파싱 (Gemini AI 사용)
     console.log("OCR text sample (first 2000 chars):", fullText.substring(0, 2000));
-
-    // 1단계: 규칙 기반 파싱 시도
-    const ruleResult = parseWithBankRule(fullText);
-
-    if (ruleResult.success && ruleResult.transactions.length > 0) {
-      console.log(`규칙 기반 파싱 성공 (${ruleResult.bankRule?.bankName}): ${ruleResult.transactions.length}개 거래`);
-
-      const transactions = ruleResult.transactions as unknown as TransactionRow[];
-      const columns = ruleResult.columns;
-
-      // 캐시 저장 (AI 비용 0)
-      if (isCacheEnabled()) {
-        const fileHash = generateFileHash(arrayBuffer);
-        await saveParsing({
-          fileHash,
-          fileName: fileName,
-          fileSize: fileSize,
-          parsingResult: transactions as Record<string, unknown>[],
-          columns,
-          tokenUsage: { inputTokens: 0, outputTokens: 0 },
-          aiCost: { usd: 0, krw: 0 },
-          userEmail,
-        });
-        console.log(`Cached parsing result for ${fileName}`);
-      }
-
-      // Storage 파일 정리
-      if (storagePath) {
-        deleteFileFromStorage(storagePath).catch(err =>
-          console.error("Failed to delete storage file:", err)
-        );
-      }
-
-      // 작업 로그 기록
-      await logAction(userEmail, "ocr_extract", {
-        fileName: fileName,
-        fileSize: fileSize,
-        extractedTextLength: fullText.length,
-        transactionCount: transactions.length,
-        columns: columns,
-        parsingMethod: "rule-based",
-        bankId: ruleResult.bankRule?.bankId,
-        aiCost: { usd: 0, krw: 0 },
-      });
-
-      return NextResponse.json({
-        success: true,
-        rawText: fullText,
-        transactions: transactions,
-        columns: columns,
-        usedAiParsing: false,
-        parsingMethod: "rule-based",
-        bankName: ruleResult.bankRule?.bankName,
-        documentType: documentType,
-        message: `${transactions.length}개의 거래내역이 추출되었습니다. (${ruleResult.bankRule?.bankName} 규칙 사용)`,
-        aiCost: {
-          inputTokens: 0,
-          outputTokens: 0,
-          usd: 0,
-          krw: 0,
-        },
-      });
-    }
-
-    // 2단계: 규칙 기반 파싱 실패 시 AI 파싱
-    console.log(`규칙 기반 파싱 실패: ${ruleResult.error || "알 수 없는 오류"}, AI 파싱으로 폴백...`);
+    console.log("Starting Gemini AI parsing...");
 
     const parseResult = await parseWithAI(fullText);
 
