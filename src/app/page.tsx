@@ -204,19 +204,24 @@ export default function Home() {
             </div>
           )}
 
-          {/* 문서 타입 정보 */}
-          {ocr.documentType && <DocumentTypeInfo type={ocr.documentType} />}
+          {/* 기술 정보 (Google 사용자만 표시) */}
+          {usage?.isUnlimited && (
+            <>
+              {/* 문서 타입 정보 */}
+              {ocr.documentType && <DocumentTypeInfo type={ocr.documentType} />}
 
-          {/* AI 비용 정보 */}
-          {ocr.aiCost && <AiCostInfo cost={ocr.aiCost} />}
+              {/* AI 비용 정보 */}
+              {ocr.aiCost && <AiCostInfo cost={ocr.aiCost} />}
 
-          {/* 원본 텍스트 */}
-          <div className="bg-white rounded-lg shadow-md p-6 mb-6">
-            <details className="cursor-pointer">
-              <summary className="text-lg font-semibold text-gray-700 mb-2">원본 OCR 텍스트 (클릭하여 펼치기)</summary>
-              <pre className="mt-4 p-4 bg-gray-100 rounded text-sm overflow-auto max-h-60 whitespace-pre-wrap">{ocr.rawText}</pre>
-            </details>
-          </div>
+              {/* 원본 텍스트 */}
+              <div className="bg-white rounded-lg shadow-md p-6 mb-6">
+                <details className="cursor-pointer">
+                  <summary className="text-lg font-semibold text-gray-700 mb-2">원본 OCR 텍스트 (클릭하여 펼치기)</summary>
+                  <pre className="mt-4 p-4 bg-gray-100 rounded text-sm overflow-auto max-h-60 whitespace-pre-wrap">{ocr.rawText}</pre>
+                </details>
+              </div>
+            </>
+          )}
 
           {/* 계좌 정보 */}
           <AccountInfoForm value={accountInfo} onChange={setAccountInfo} />
