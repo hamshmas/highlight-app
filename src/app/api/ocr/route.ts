@@ -631,6 +631,25 @@ export async function POST(request: NextRequest) {
   }
 
   const userEmail = session.user?.email || "unknown";
+  const provider = (session as any).provider || "google";
+  const userId = (session as any).providerAccountId || userEmail;
+
+  // 카카오 사용자 사용량 제한 체크
+  if (provider === "kakao") {
+    const { canUseService, incrementUsage } = await import("@/lib/usage");
+    const { canUse, remaining } = await canUseService(userId, provider);
+
+    if (!canUse) {
+      return NextResponse.json(
+        {
+          error: "사용 한도 초과",
+          message: "무료 사용량(3회)을 모두 사용하셨습니다. 추가 이용을 원하시면 관리자에게 문의하세요.",
+          limitReached: true
+        },
+        { status: 403 }
+      );
+    }
+  }
 
   try {
     // Content-Type에 따라 요청 처리 방식 결정
@@ -742,65 +761,36 @@ export async function POST(request: NextRequest) {
       console.log(`Cache MISS for ${fileName}`);
     }
 
-    // 엑셀 파일인 경우 직접 파싱 (OCR 불필요)
+    // 변수 선언 (모든 파일 타입에서 공유)
+    let fullText = "";
+    let documentType: "text-based" | "image-based" | "image" | "excel" = "image";
+    const isPdf = fileName.toLowerCase().endsWith(".pdf");
     const isExcel = fileName.toLowerCase().match(/\.(xlsx|xls)$/);
+
+    // 엑셀 파일인 경우: 텍스트 추출
     if (isExcel) {
-      console.log("Processing Excel file directly...");
+      console.log("Processing Excel file with Gemini AI...");
 
       try {
         const workbook = XLSX.read(arrayBuffer, { type: "array" });
         const sheetName = workbook.SheetNames[0];
         const sheet = workbook.Sheets[sheetName];
 
-        // 시트를 JSON으로 변환 (첫 행을 헤더로 사용)
-        const jsonData = XLSX.utils.sheet_to_json(sheet, { defval: "" }) as Record<string, unknown>[];
+        // 시트를 텍스트로 변환 (Gemini에 전달할 형식)
+        const textData = XLSX.utils.sheet_to_csv(sheet, { FS: "\t", RS: "\n" });
 
-        if (jsonData.length === 0) {
+        if (!textData || textData.trim().length === 0) {
           return NextResponse.json(
             { error: "엑셀 파일에 데이터가 없습니다." },
             { status: 400 }
           );
         }
 
-        // 컬럼명 추출 (첫 번째 행에서)
-        const columns = Object.keys(jsonData[0]);
-        console.log(`Excel columns: ${columns.join(", ")}`);
+        console.log(`Excel text extracted: ${textData.length} characters`);
+        console.log(`First 500 chars: ${textData.substring(0, 500)}`);
 
-        // 금액 필드를 숫자로 변환
-        const transactions = jsonData.map(row => {
-          const result: TransactionRow = { date: "", description: "", deposit: 0, withdrawal: 0, balance: 0 };
-          for (const [key, value] of Object.entries(row)) {
-            if (typeof value === "string") {
-              // 숫자 형식인지 확인 (쉼표, 원화 기호 제거)
-              const cleaned = value.replace(/[,원₩\s]/g, "");
-              if (/^-?\d+(\.\d+)?$/.test(cleaned)) {
-                result[key] = parseFloat(cleaned);
-              } else {
-                result[key] = value;
-              }
-            } else if (typeof value === "number") {
-              result[key] = value;
-            } else {
-              result[key] = String(value);
-            }
-          }
-          return result;
-        });
-
-        console.log(`Excel parsing completed: ${transactions.length} rows`);
-
-        // 캐시 저장
-        if (isCacheEnabled()) {
-          const fileHash = generateFileHash(arrayBuffer);
-          await saveParsing({
-            fileHash,
-            fileName,
-            fileSize,
-            parsingResult: transactions as Record<string, unknown>[],
-            columns,
-            userEmail,
-          });
-        }
+        fullText = textData;
+        documentType = "excel";
 
         // Storage 파일 정리
         if (storagePath) {
@@ -808,28 +798,6 @@ export async function POST(request: NextRequest) {
             console.error("Failed to delete storage file:", err)
           );
         }
-
-        // 로그 기록
-        await logAction(userEmail, "ocr_extract", {
-          fileName,
-          fileSize,
-          transactionCount: transactions.length,
-          columns,
-          parsingMethod: "excel-direct",
-          documentType: "excel",
-        });
-
-        return NextResponse.json({
-          success: true,
-          rawText: "(엑셀 파일에서 직접 추출)",
-          transactions,
-          columns,
-          usedAiParsing: false,
-          parsingMethod: "excel-direct",
-          documentType: "excel",
-          message: `${transactions.length}개의 거래내역이 추출되었습니다. (엑셀)`,
-          aiCost: { inputTokens: 0, outputTokens: 0, usd: 0, krw: 0 },
-        });
       } catch (excelError) {
         console.error("Excel parsing error:", excelError);
         return NextResponse.json(
@@ -839,159 +807,241 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    // 버퍼 복사 (여러 라이브러리에서 사용하기 위해)
-    const bufferCopy = Buffer.from(arrayBuffer).buffer.slice(0);
-    const buffer = Buffer.from(bufferCopy);
-    const base64Content = buffer.toString("base64");
+    // PDF 또는 이미지 파일 처리 (Excel이 아닌 경우에만)
+    if (!isExcel) {
+      // 버퍼 복사 (여러 라이브러리에서 사용하기 위해)
+      const bufferCopy = Buffer.from(arrayBuffer).buffer.slice(0);
+      const buffer = Buffer.from(bufferCopy);
+      const base64Content = buffer.toString("base64");
 
-    // Google Cloud Vision OCR 호출
-    const isPdf = fileName.toLowerCase().endsWith(".pdf");
+      console.log("OCR: Processing file:", fileName, "isPdf:", isPdf, "size:", fileSize);
 
-    let fullText = "";
-    let documentType: "text-based" | "image-based" | "image" = "image"; // 문서 타입
+      if (isPdf) {
+        // 먼저 텍스트 기반 PDF인지 확인
+        const pdfBuffer = Buffer.from(bufferCopy);
+        const doc = mupdf.Document.openDocument(pdfBuffer, "application/pdf");
+        const pageCount = doc.countPages();
 
-    console.log("OCR: Processing file:", fileName, "isPdf:", isPdf, "size:", fileSize);
+        let totalTextLength = 0;
+        let pagesWithText = 0;
 
-    if (isPdf) {
-      // 먼저 텍스트 기반 PDF인지 확인
-      const pdfBuffer = Buffer.from(bufferCopy);
-      const doc = mupdf.Document.openDocument(pdfBuffer, "application/pdf");
-      const pageCount = doc.countPages();
-
-      let totalTextLength = 0;
-      let pagesWithText = 0;
-
-      for (let i = 0; i < Math.min(pageCount, 3); i++) {
-        const page = doc.loadPage(i);
-        const text = page.toStructuredText("preserve-whitespace").asText();
-        const cleanedText = text?.replace(/\s+/g, " ").trim() || "";
-        totalTextLength += cleanedText.length;
-        if (cleanedText.length >= 50) {
-          pagesWithText++;
-        }
-      }
-
-      const avgTextPerPage = totalTextLength / Math.min(pageCount, 3);
-      const textRatio = pagesWithText / Math.min(pageCount, 3);
-
-      // 텍스트 기반 PDF인 경우 텍스트 직접 추출 (OCR 스킵)
-      if (avgTextPerPage >= 100 && textRatio >= 0.7) {
-        documentType = "text-based";
-        console.log(`Text-based PDF detected: avgTextPerPage=${avgTextPerPage}, textRatio=${textRatio}`);
-        console.log("Extracting text directly from PDF (skipping OCR)...");
-
-        // 모든 페이지에서 텍스트 직접 추출
-        const allTexts: string[] = [];
-        for (let i = 0; i < pageCount; i++) {
+        for (let i = 0; i < Math.min(pageCount, 3); i++) {
           const page = doc.loadPage(i);
           const text = page.toStructuredText("preserve-whitespace").asText();
-          if (text) {
-            allTexts.push(text);
+          const cleanedText = text?.replace(/\s+/g, " ").trim() || "";
+          totalTextLength += cleanedText.length;
+          if (cleanedText.length >= 50) {
+            pagesWithText++;
           }
         }
-        fullText = allTexts.join("\n\n");
-        console.log(`Direct text extraction completed: ${fullText.length} characters from ${pageCount} pages`);
-      } else {
-        // 이미지 기반 PDF: mupdf를 사용하여 PDF를 이미지로 변환 후 Vision OCR 사용
-        documentType = "image-based";
-        console.log("Converting PDF to images for OCR using mupdf...");
 
-        const maxPages = 50; // 최대 50페이지만 처리
-        const actualPageCount = Math.min(pageCount, maxPages);
+        const avgTextPerPage = totalTextLength / Math.min(pageCount, 3);
+        const textRatio = pagesWithText / Math.min(pageCount, 3);
 
-        // 위에서 이미 열린 doc, pageCount 재사용
-        console.log(`PDF has ${pageCount} pages, processing ${actualPageCount} pages`);
+        // 텍스트 기반 PDF인 경우 텍스트 직접 추출 (OCR 스킵)
+        if (avgTextPerPage >= 100 && textRatio >= 0.7) {
+          documentType = "text-based";
+          console.log(`Text-based PDF detected: avgTextPerPage=${avgTextPerPage}, textRatio=${textRatio}`);
+          console.log("Extracting text directly from PDF (skipping OCR)...");
 
-        // 1단계: 모든 페이지를 이미지로 변환 (순차 - mupdf는 동기 API)
-        const pageImages: { pageNum: number; base64: string }[] = [];
-        const conversionStart = Date.now();
+          // 모든 페이지에서 텍스트 직접 추출
+          const allTexts: string[] = [];
+          for (let i = 0; i < pageCount; i++) {
+            const page = doc.loadPage(i);
+            const text = page.toStructuredText("preserve-whitespace").asText();
+            if (text) {
+              allTexts.push(text);
+            }
+          }
+          fullText = allTexts.join("\n\n");
+          console.log(`Direct text extraction completed: ${fullText.length} characters from ${pageCount} pages`);
+        } else {
+          // 이미지 기반 PDF: mupdf를 사용하여 PDF를 이미지로 변환 후 Vision OCR 사용
+          documentType = "image-based";
+          console.log("Converting PDF to images for OCR using mupdf...");
 
-        for (let pageNum = 0; pageNum < actualPageCount; pageNum++) {
-          try {
-            const page = doc.loadPage(pageNum);
+          const maxPages = 50; // 최대 50페이지만 처리
+          const actualPageCount = Math.min(pageCount, maxPages);
 
-            // 108 DPI로 이미지 생성 (72 DPI가 기본, 1.5배 스케일 = 108 DPI) - 속도 최적화
-            const scale = 1.5;
-            const pixmap = page.toPixmap(
-              mupdf.Matrix.scale(scale, scale),
-              mupdf.ColorSpace.DeviceRGB,
-              false,
-              true
+          // 위에서 이미 열린 doc, pageCount 재사용
+          console.log(`PDF has ${pageCount} pages, processing ${actualPageCount} pages`);
+
+          // 1단계: 모든 페이지를 이미지로 변환 (순차 - mupdf는 동기 API)
+          const pageImages: { pageNum: number; base64: string }[] = [];
+          const conversionStart = Date.now();
+
+          for (let pageNum = 0; pageNum < actualPageCount; pageNum++) {
+            try {
+              const page = doc.loadPage(pageNum);
+
+              // 108 DPI로 이미지 생성 (72 DPI가 기본, 1.5배 스케일 = 108 DPI) - 속도 최적화
+              const scale = 1.5;
+              const pixmap = page.toPixmap(
+                mupdf.Matrix.scale(scale, scale),
+                mupdf.ColorSpace.DeviceRGB,
+                false,
+                true
+              );
+
+              // PNG로 변환
+              const pngData = pixmap.asPNG();
+              const pageBase64 = Buffer.from(pngData).toString("base64");
+              pageImages.push({ pageNum, base64: pageBase64 });
+            } catch (pageError) {
+              console.error(`Error converting page ${pageNum + 1}:`, pageError);
+            }
+          }
+          console.log(`Image conversion completed in ${Date.now() - conversionStart}ms`);
+
+          // 2단계: Gemini Vision으로 직접 테이블 파싱 (10개씩 배치)
+          const ocrStart = Date.now();
+          const batchSize = 10;
+          console.log(`Starting Gemini Vision parsing for ${pageImages.length} pages...`);
+          const allTransactionsFromImages: TransactionRow[] = [];
+
+          // 토큰 사용량 초기화
+          resetTokenUsage();
+
+          // 1단계: 첫 번째 페이지만 먼저 처리하여 컬럼명 추출
+          let extractedColumns: string[] | undefined;
+
+          if (pageImages.length > 0) {
+            console.log("Processing first page to extract column names...");
+            const firstPageResult = await parseTableImageWithGemini(
+              pageImages[0].base64,
+              pageImages[0].pageNum,
+              "image/png"
             );
 
-            // PNG로 변환
-            const pngData = pixmap.asPNG();
-            const pageBase64 = Buffer.from(pngData).toString("base64");
-            pageImages.push({ pageNum, base64: pageBase64 });
-          } catch (pageError) {
-            console.error(`Error converting page ${pageNum + 1}:`, pageError);
+            if (firstPageResult.length > 0) {
+              allTransactionsFromImages.push(...firstPageResult);
+              extractedColumns = Object.keys(firstPageResult[0]);
+              console.log(`First page: ${firstPageResult.length} transactions, columns: ${extractedColumns.join(", ")}`);
+            }
           }
+
+          // 2단계: 나머지 페이지들을 배치로 처리 (첫 페이지에서 추출한 컬럼명 전달)
+          const remainingPages = pageImages.slice(1);
+
+          for (let batchStart = 0; batchStart < remainingPages.length; batchStart += batchSize) {
+            const batchNum = Math.floor(batchStart / batchSize) + 1;
+            const totalBatches = Math.ceil(remainingPages.length / batchSize);
+            const pageStart = batchStart + 2; // 2페이지부터 시작
+            const pageEnd = Math.min(batchStart + batchSize + 1, remainingPages.length + 1);
+            console.log(`Batch ${batchNum}/${totalBatches} starting (pages ${pageStart}-${pageEnd})...`);
+
+            const batch = remainingPages.slice(batchStart, batchStart + batchSize);
+
+            // 첫 페이지에서 추출한 컬럼명을 모든 페이지에 전달하여 일관성 유지
+            const batchPromises = batch.map(({ pageNum, base64 }) =>
+              parseTableImageWithGemini(base64, pageNum, "image/png", extractedColumns)
+            );
+
+            const batchResults = await Promise.all(batchPromises);
+            let batchTransactionCount = 0;
+            for (const transactions of batchResults) {
+              allTransactionsFromImages.push(...transactions);
+              batchTransactionCount += transactions.length;
+            }
+            console.log(`Batch ${batchNum}/${totalBatches} completed: ${batchTransactionCount} transactions`);
+          }
+
+          console.log(`Gemini Vision completed in ${Date.now() - ocrStart}ms`);
+          console.log(`Total transactions from images: ${allTransactionsFromImages.length}`);
+
+          // 디버그: 첫 번째 거래 데이터 샘플 출력
+          if (allTransactionsFromImages.length > 0) {
+            console.log("Sample transaction (first):", JSON.stringify(allTransactionsFromImages[0]));
+          }
+
+          // 이미지 기반 PDF는 Gemini Vision 결과를 직접 반환
+          if (allTransactionsFromImages.length === 0) {
+            // Storage 파일 정리
+            if (storagePath) {
+              deleteFileFromStorage(storagePath).catch(err =>
+                console.error("Failed to delete storage file:", err)
+              );
+            }
+            return NextResponse.json(
+              { error: "이미지에서 거래내역을 추출할 수 없습니다. 테이블이 명확한지 확인해주세요." },
+              { status: 400 }
+            );
+          }
+
+          // 컬럼 추출 (첫 번째 거래에서 - 프롬프트로 일관성 보장됨)
+          const columns: string[] = allTransactionsFromImages.length > 0
+            ? Object.keys(allTransactionsFromImages[0])
+            : [];
+          console.log(`Columns from first transaction: ${columns.length} columns - ${columns.join(", ")}`);
+
+          const cost = calculateCost(totalTokenUsage);
+
+          // 캐시 저장
+          if (isCacheEnabled()) {
+            const fileHash = generateFileHash(arrayBuffer);
+            await saveParsing({
+              fileHash,
+              fileName,
+              fileSize,
+              parsingResult: allTransactionsFromImages as Record<string, unknown>[],
+              columns,
+              tokenUsage: { ...totalTokenUsage },
+              aiCost: { ...cost },
+              userEmail,
+            });
+          }
+
+          // Storage 파일 정리
+          if (storagePath) {
+            deleteFileFromStorage(storagePath).catch(err =>
+              console.error("Failed to delete storage file:", err)
+            );
+          }
+
+          // 로그 기록
+          await logAction(userEmail, "ocr_extract", {
+            fileName,
+            fileSize,
+            transactionCount: allTransactionsFromImages.length,
+            columns,
+            parsingMethod: "gemini-vision",
+            documentType,
+            aiCost: cost,
+            tokenUsage: totalTokenUsage,
+          });
+
+          // 디버그: 컬럼과 첫 번째 거래 출력
+          console.log("Returning columns:", columns);
+          if (allTransactionsFromImages.length > 0) {
+            console.log("First transaction keys:", Object.keys(allTransactionsFromImages[0]));
+          }
+
+          return NextResponse.json({
+            success: true,
+            rawText: "(Gemini Vision으로 이미지에서 직접 추출)",
+            transactions: allTransactionsFromImages,
+            columns,
+            usedAiParsing: true,
+            parsingMethod: "gemini-vision",
+            documentType,
+            message: `${allTransactionsFromImages.length}개의 거래내역이 추출되었습니다. (Gemini Vision)`,
+            aiCost: {
+              inputTokens: totalTokenUsage.inputTokens,
+              outputTokens: totalTokenUsage.outputTokens,
+              usd: cost.usd,
+              krw: cost.krw,
+            },
+          });
         }
-        console.log(`Image conversion completed in ${Date.now() - conversionStart}ms`);
+      } else {
+        // 이미지의 경우 - Gemini Vision으로 직접 파싱
+        documentType = "image";
+        console.log("Processing image with Gemini Vision...");
 
-        // 2단계: Gemini Vision으로 직접 테이블 파싱 (10개씩 배치)
-        const ocrStart = Date.now();
-        const batchSize = 10;
-        console.log(`Starting Gemini Vision parsing for ${pageImages.length} pages...`);
-        const allTransactionsFromImages: TransactionRow[] = [];
-
-        // 토큰 사용량 초기화
         resetTokenUsage();
+        const transactions = await parseTableImageWithGemini(base64Content, 0, "image/png");
 
-        // 1단계: 첫 번째 페이지만 먼저 처리하여 컬럼명 추출
-        let extractedColumns: string[] | undefined;
-
-        if (pageImages.length > 0) {
-          console.log("Processing first page to extract column names...");
-          const firstPageResult = await parseTableImageWithGemini(
-            pageImages[0].base64,
-            pageImages[0].pageNum,
-            "image/png"
-          );
-
-          if (firstPageResult.length > 0) {
-            allTransactionsFromImages.push(...firstPageResult);
-            extractedColumns = Object.keys(firstPageResult[0]);
-            console.log(`First page: ${firstPageResult.length} transactions, columns: ${extractedColumns.join(", ")}`);
-          }
-        }
-
-        // 2단계: 나머지 페이지들을 배치로 처리 (첫 페이지에서 추출한 컬럼명 전달)
-        const remainingPages = pageImages.slice(1);
-
-        for (let batchStart = 0; batchStart < remainingPages.length; batchStart += batchSize) {
-          const batchNum = Math.floor(batchStart / batchSize) + 1;
-          const totalBatches = Math.ceil(remainingPages.length / batchSize);
-          const pageStart = batchStart + 2; // 2페이지부터 시작
-          const pageEnd = Math.min(batchStart + batchSize + 1, remainingPages.length + 1);
-          console.log(`Batch ${batchNum}/${totalBatches} starting (pages ${pageStart}-${pageEnd})...`);
-
-          const batch = remainingPages.slice(batchStart, batchStart + batchSize);
-
-          // 첫 페이지에서 추출한 컬럼명을 모든 페이지에 전달하여 일관성 유지
-          const batchPromises = batch.map(({ pageNum, base64 }) =>
-            parseTableImageWithGemini(base64, pageNum, "image/png", extractedColumns)
-          );
-
-          const batchResults = await Promise.all(batchPromises);
-          let batchTransactionCount = 0;
-          for (const transactions of batchResults) {
-            allTransactionsFromImages.push(...transactions);
-            batchTransactionCount += transactions.length;
-          }
-          console.log(`Batch ${batchNum}/${totalBatches} completed: ${batchTransactionCount} transactions`);
-        }
-
-        console.log(`Gemini Vision completed in ${Date.now() - ocrStart}ms`);
-        console.log(`Total transactions from images: ${allTransactionsFromImages.length}`);
-
-        // 디버그: 첫 번째 거래 데이터 샘플 출력
-        if (allTransactionsFromImages.length > 0) {
-          console.log("Sample transaction (first):", JSON.stringify(allTransactionsFromImages[0]));
-        }
-
-        // 이미지 기반 PDF는 Gemini Vision 결과를 직접 반환
-        if (allTransactionsFromImages.length === 0) {
+        if (transactions.length === 0) {
           // Storage 파일 정리
           if (storagePath) {
             deleteFileFromStorage(storagePath).catch(err =>
@@ -1004,11 +1054,10 @@ export async function POST(request: NextRequest) {
           );
         }
 
-        // 컬럼 추출 (첫 번째 거래에서 - 프롬프트로 일관성 보장됨)
-        const columns: string[] = allTransactionsFromImages.length > 0
-          ? Object.keys(allTransactionsFromImages[0])
+        // 컬럼 추출 (첫 번째 거래에서만 - 일관성 보장)
+        const columns: string[] = transactions.length > 0
+          ? Object.keys(transactions[0])
           : [];
-        console.log(`Columns from first transaction: ${columns.length} columns - ${columns.join(", ")}`);
 
         const cost = calculateCost(totalTokenUsage);
 
@@ -1019,7 +1068,7 @@ export async function POST(request: NextRequest) {
             fileHash,
             fileName,
             fileSize,
-            parsingResult: allTransactionsFromImages as Record<string, unknown>[],
+            parsingResult: transactions as Record<string, unknown>[],
             columns,
             tokenUsage: { ...totalTokenUsage },
             aiCost: { ...cost },
@@ -1038,7 +1087,7 @@ export async function POST(request: NextRequest) {
         await logAction(userEmail, "ocr_extract", {
           fileName,
           fileSize,
-          transactionCount: allTransactionsFromImages.length,
+          transactionCount: transactions.length,
           columns,
           parsingMethod: "gemini-vision",
           documentType,
@@ -1046,21 +1095,15 @@ export async function POST(request: NextRequest) {
           tokenUsage: totalTokenUsage,
         });
 
-        // 디버그: 컬럼과 첫 번째 거래 출력
-        console.log("Returning columns:", columns);
-        if (allTransactionsFromImages.length > 0) {
-          console.log("First transaction keys:", Object.keys(allTransactionsFromImages[0]));
-        }
-
         return NextResponse.json({
           success: true,
           rawText: "(Gemini Vision으로 이미지에서 직접 추출)",
-          transactions: allTransactionsFromImages,
+          transactions,
           columns,
           usedAiParsing: true,
           parsingMethod: "gemini-vision",
           documentType,
-          message: `${allTransactionsFromImages.length}개의 거래내역이 추출되었습니다. (Gemini Vision)`,
+          message: `${transactions.length}개의 거래내역이 추출되었습니다. (Gemini Vision)`,
           aiCost: {
             inputTokens: totalTokenUsage.inputTokens,
             outputTokens: totalTokenUsage.outputTokens,
@@ -1069,87 +1112,12 @@ export async function POST(request: NextRequest) {
           },
         });
       }
-    } else {
-      // 이미지의 경우 - Gemini Vision으로 직접 파싱
-      documentType = "image";
-      console.log("Processing image with Gemini Vision...");
+    } // End of if (!isExcel) block - OCR processing
 
-      resetTokenUsage();
-      const transactions = await parseTableImageWithGemini(base64Content, 0, "image/png");
+    // Excel과 텍스트 기반 PDF 공통: AI 텍스트 파싱
+    // (Excel은 위에서 fullText 설정됨, 텍스트 기반 PDF도 fullText 설정됨)
 
-      if (transactions.length === 0) {
-        // Storage 파일 정리
-        if (storagePath) {
-          deleteFileFromStorage(storagePath).catch(err =>
-            console.error("Failed to delete storage file:", err)
-          );
-        }
-        return NextResponse.json(
-          { error: "이미지에서 거래내역을 추출할 수 없습니다. 테이블이 명확한지 확인해주세요." },
-          { status: 400 }
-        );
-      }
-
-      // 컬럼 추출 (첫 번째 거래에서만 - 일관성 보장)
-      const columns: string[] = transactions.length > 0
-        ? Object.keys(transactions[0])
-        : [];
-
-      const cost = calculateCost(totalTokenUsage);
-
-      // 캐시 저장
-      if (isCacheEnabled()) {
-        const fileHash = generateFileHash(arrayBuffer);
-        await saveParsing({
-          fileHash,
-          fileName,
-          fileSize,
-          parsingResult: transactions as Record<string, unknown>[],
-          columns,
-          tokenUsage: { ...totalTokenUsage },
-          aiCost: { ...cost },
-          userEmail,
-        });
-      }
-
-      // Storage 파일 정리
-      if (storagePath) {
-        deleteFileFromStorage(storagePath).catch(err =>
-          console.error("Failed to delete storage file:", err)
-        );
-      }
-
-      // 로그 기록
-      await logAction(userEmail, "ocr_extract", {
-        fileName,
-        fileSize,
-        transactionCount: transactions.length,
-        columns,
-        parsingMethod: "gemini-vision",
-        documentType,
-        aiCost: cost,
-        tokenUsage: totalTokenUsage,
-      });
-
-      return NextResponse.json({
-        success: true,
-        rawText: "(Gemini Vision으로 이미지에서 직접 추출)",
-        transactions,
-        columns,
-        usedAiParsing: true,
-        parsingMethod: "gemini-vision",
-        documentType,
-        message: `${transactions.length}개의 거래내역이 추출되었습니다. (Gemini Vision)`,
-        aiCost: {
-          inputTokens: totalTokenUsage.inputTokens,
-          outputTokens: totalTokenUsage.outputTokens,
-          usd: cost.usd,
-          krw: cost.krw,
-        },
-      });
-    }
-
-    // 텍스트 기반 PDF만 여기에 도달 (fullText 사용)
+    // 텍스트가 없으면 에러
     if (!fullText) {
       return NextResponse.json(
         { error: "텍스트를 추출할 수 없습니다." },
@@ -1278,6 +1246,12 @@ export async function POST(request: NextRequest) {
       aiCost: cost,
       tokenUsage: tokenUsage,
     });
+
+    // 카카오 사용자 사용량 증가
+    if (provider === "kakao") {
+      const { incrementUsage } = await import("@/lib/usage");
+      await incrementUsage(userId, provider);
+    }
 
     return NextResponse.json({
       success: true,
