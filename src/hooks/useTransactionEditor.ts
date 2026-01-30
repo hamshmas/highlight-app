@@ -81,8 +81,11 @@ export function useTransactionEditor(initialColumns: string[] = DEFAULT_COLUMNS)
     }, []);
 
     const goToNextPage = useCallback(() => {
-        setCurrentPage((p) => Math.min(totalPages, p + 1));
-    }, []);
+        setCurrentPage((p) => {
+            const total = Math.ceil(transactions.length / ITEMS_PER_PAGE);
+            return Math.min(total, p + 1);
+        });
+    }, [transactions.length]);
 
     /**
      * 초기화
