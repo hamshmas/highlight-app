@@ -520,38 +520,21 @@ async function parseFullTextWithAIParallel(
   try {
     // 텍스트를 청크로 분할 (약 3,500자씩)
     const chunks = splitTextIntoChunks(text, 4000);
-    console.log(`Splitting text into ${chunks.length} chunks for parallel AI processing`);
+    console.log(`Splitting text into ${chunks.length} chunks for TRUE parallel AI processing`);
 
-    // 1단계: 첫 번째 청크를 먼저 파싱하여 컬럼명 확인
-    const firstChunkResult = await parseChunkWithAI(chunks[0], 0, [], "[]");
-
-    // 첫 번째 청크에서 컬럼명 추출
-    let columnsFromFirst: string[] = [];
-    let sampleExample = "[]";
-
-    if (firstChunkResult.length > 0) {
-      columnsFromFirst = Object.keys(firstChunkResult[0]);
-      sampleExample = JSON.stringify(firstChunkResult.slice(0, 3), null, 2);
-      console.log(`First chunk columns: ${columnsFromFirst.join(", ")}`);
-    }
-
-    // 2단계: 나머지 청크들을 병렬 처리 (첫 번째 청크의 컬럼명과 샘플 전달)
+    // 모든 청크를 동시에 병렬 처리 (true parallel)
     const startTime = Date.now();
-    const remainingChunks = chunks.slice(1);
 
-    const chunkPromises = remainingChunks.map((chunk, index) =>
-      parseChunkWithAI(chunk, index + 1, columnsFromFirst, sampleExample)
+    const chunkPromises = chunks.map((chunk, index) =>
+      parseChunkWithAI(chunk, index, [], "[]")
     );
 
     const results = await Promise.all(chunkPromises);
     const elapsed = Date.now() - startTime;
-    console.log(`Parallel AI processing completed in ${elapsed}ms`);
+    console.log(`True parallel AI processing completed in ${elapsed}ms`);
 
-    // 모든 결과 합치기 (첫 번째 청크 포함)
-    const allTransactions: TransactionRow[] = [...firstChunkResult];
-    for (const chunkTransactions of results) {
-      allTransactions.push(...chunkTransactions);
-    }
+    // 모든 결과 합치기
+    const allTransactions: TransactionRow[] = results.flat();
 
     // 중복 제거 (동적 컬럼명 지원)
     const seen = new Set<string>();
