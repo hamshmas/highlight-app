@@ -387,7 +387,12 @@ export default function Home() {
               <button onClick={ocr.abort} className="px-4 py-2 bg-red-500 text-white text-sm font-medium rounded hover:bg-red-600 transition">중단</button>
             </div>
             {ocr.isAiParsing && (
-              <p className="mt-3 ml-7 text-sm">Gemini AI가 거래내역을 분석하고 있습니다. 파일 크기에 따라 1~3분 정도 소요될 수 있습니다.</p>
+              <p className="mt-3 ml-7 text-sm">
+                {usage?.isUnlimited
+                  ? "Gemini AI가 거래내역을 분석하고 있습니다. 파일 크기에 따라 1~3분 정도 소요될 수 있습니다."
+                  : "거래내역을 분석하고 있습니다. 파일 크기에 따라 1~3분 정도 소요될 수 있습니다."
+                }
+              </p>
             )}
           </div>
         )}
