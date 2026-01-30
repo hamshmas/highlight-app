@@ -130,7 +130,7 @@ async function parseTableImageWithGemini(
 
   try {
     const model = gemini.getGenerativeModel({
-      model: "gemini-2.5-flash",
+      model: "gemini-2.0-flash",
       generationConfig: {
         maxOutputTokens: 8192,
       },
@@ -344,9 +344,9 @@ async function parseChunkWithAI(
 
   try {
     const model = gemini.getGenerativeModel({
-      model: "gemini-2.5-flash",
+      model: "gemini-2.0-flash",
       generationConfig: {
-        maxOutputTokens: 16384, // 충분한 출력 토큰 확보
+        maxOutputTokens: 32768, // 충분한 출력 토큰 확보
       },
     });
 
@@ -519,23 +519,37 @@ async function parseFullTextWithAIParallel(
   if (!gemini) return null;
 
   try {
-    // 텍스트를 청크로 분할 (약 3,500자씩)
-    const chunks = splitTextIntoChunks(text, 4000);
-    console.log(`Splitting text into ${chunks.length} chunks for TRUE parallel AI processing`);
+    // 텍스트를 청크로 분할 (약 2000자씩 - 작은 청크로 정확도 향상)
+    const chunks = splitTextIntoChunks(text, 2000);
+    console.log(`Splitting text into ${chunks.length} chunks for parallel AI processing`);
 
-    // 모든 청크를 동시에 병렬 처리 (true parallel)
+    // 1단계: 첫 번째 청크를 먼저 파싱하여 컬럼명 확인
     const startTime = Date.now();
+    const firstChunkResult = await parseChunkWithAI(chunks[0], 0, [], "[]");
 
-    const chunkPromises = chunks.map((chunk, index) =>
-      parseChunkWithAI(chunk, index, [], "[]")
+    // 첫 번째 청크에서 컬럼명 추출
+    let columnsFromFirst: string[] = [];
+    let sampleExample = "[]";
+
+    if (firstChunkResult.length > 0) {
+      columnsFromFirst = Object.keys(firstChunkResult[0]);
+      sampleExample = JSON.stringify(firstChunkResult.slice(0, 2), null, 2);
+      console.log(`First chunk columns: ${columnsFromFirst.join(", ")}`);
+    }
+
+    // 2단계: 나머지 청크들을 병렬 처리 (첫 번째 청크의 컬럼명과 샘플 전달)
+    const remainingChunks = chunks.slice(1);
+
+    const chunkPromises = remainingChunks.map((chunk, index) =>
+      parseChunkWithAI(chunk, index + 1, columnsFromFirst, sampleExample)
     );
 
     const results = await Promise.all(chunkPromises);
     const elapsed = Date.now() - startTime;
-    console.log(`True parallel AI processing completed in ${elapsed}ms`);
+    console.log(`Parallel AI processing completed in ${elapsed}ms`);
 
-    // 모든 결과 합치기
-    const allTransactions: TransactionRow[] = results.flat();
+    // 모든 결과 합치기 (첫 번째 청크 포함)
+    const allTransactions: TransactionRow[] = [...firstChunkResult, ...results.flat()];
 
     // 중복 제거 (동적 컬럼명 지원)
     const seen = new Set<string>();
