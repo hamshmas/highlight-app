@@ -9,7 +9,26 @@
       "Bash(git push:*)",
       "Bash(git commit:*)",
       "Bash(npx vercel logs:*)",
-      "Bash(git revert:*)"
+      "Bash(git revert:*)",
+      "Bash(npx supabase:*)",
+      "Bash(node check-usage.js:*)",
+      "Bash(npm install:*)",
+      "Bash(lsof:*)",
+      "Bash(grep:*)",
+      "Bash(find:*)",
+      "WebSearch",
+      "WebFetch(domain:docs.tosspayments.com)",
+      "WebFetch(domain:velog.io)",
+      "WebFetch(domain:www.npmjs.com)",
+      "WebFetch(domain:www.taxwatch.co.kr)",
+      "WebFetch(domain:webzine.kacta.or.kr)",
+      "Bash(npx tsc:*)",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:devshelly.com)",
+      "WebFetch(domain:www.tosspayments.com)",
+      "Bash(npm run build:*)",
+      "Bash(gh api:*)",
+      "Bash(git tag:*)"
     ]
   }
 }
