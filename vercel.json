@@ -3,5 +3,11 @@
     "src/app/api/ocr/route.ts": {
       "maxDuration": 300
     }
-  }
+  },
+  "crons": [
+    {
+      "path": "/api/cron/billing",
+      "schedule": "0 0 * * *"
+    }
+  ]
 }

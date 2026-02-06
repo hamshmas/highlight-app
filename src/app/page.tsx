@@ -2,7 +2,10 @@
 
 import { useSession, signIn, signOut } from "next-auth/react";
 import { useState, useMemo, useEffect } from "react";
+import Link from "next/link";
 import { FeedbackModal } from "@/components/feedback/FeedbackModal";
+import { SubscriptionBadge } from "@/components/subscription/SubscriptionBadge";
+import { SubscriptionManageModal } from "@/components/subscription/SubscriptionManageModal";
 import { useTimer, useFileUpload, useTransactionEditor, useOcrProcess } from "@/hooks";
 import { HIGHLIGHT_COLORS, COLUMN_LABELS, SUPPORTED_FILE_EXTENSIONS } from "@/lib/constants";
 import {
@@ -12,6 +15,7 @@ import {
   isNumericColumn
 } from "@/lib/column-detection";
 import type { TransactionRow, AccountInfo } from "@/types/transaction";
+import type { PlanType } from "@/types/subscription";
 
 // 사용량 데이터 타입
 interface UsageData {
@@ -20,6 +24,9 @@ interface UsageData {
   maxLimit: number;
   isUnlimited: boolean;
   used: number;
+  plan: PlanType;
+  periodEnd: string | null;
+  cardLast4: string | null;
 }
 
 export default function Home() {
@@ -37,13 +44,20 @@ export default function Home() {
   // 피드백 모달 상태
   const [isFeedbackOpen, setIsFeedbackOpen] = useState(false);
 
+  // 구독 관리 모달 상태
+  const [isManageOpen, setIsManageOpen] = useState(false);
+
   // 사용량 조회
+  const fetchUsage = () => {
+    fetch("/api/usage")
+      .then((res) => res.json())
+      .then((data) => setUsage(data))
+      .catch((err) => console.error("Failed to fetch usage:", err));
+  };
+
   useEffect(() => {
     if (session) {
-      fetch("/api/usage")
-        .then((res) => res.json())
-        .then((data) => setUsage(data))
-        .catch((err) => console.error("Failed to fetch usage:", err));
+      fetchUsage();
     }
   }, [session, ocr.isVerifying]); // OCR 완료 후에도 다시 조회
 
@@ -297,29 +311,10 @@ export default function Home() {
             <h1 className="text-2xl font-bold text-gray-800">거래내역 하이라이트</h1>
             <div className="flex items-center gap-4">
               <span className="text-sm text-gray-600">{session.user?.email || session.user?.name || '사용자'}</span>
-              {/* 사용량 배지: Kakao 사용자만 표시 (로딩 중에도 표시) */}
-              {usage === null ? (
-                <span className="text-xs px-2 py-1 rounded-full bg-gray-100 text-gray-500">
-                  로딩중...
-                </span>
-              ) : !usage.isUnlimited ? (
-                <>
-                  <span className={`text-xs px-2 py-1 rounded-full ${usage.remaining > 0
-                    ? 'bg-blue-100 text-blue-700'
-                    : 'bg-red-100 text-red-700'
-                    }`}>
-                    남은 변환: {usage.remaining}/{usage.maxLimit}
-                  </span>
-                  {usage.remaining === 0 && (
-                    <button
-                      onClick={() => setIsFeedbackOpen(true)}
-                      className="text-xs px-2 py-1 rounded-full bg-orange-100 text-orange-700 hover:bg-orange-200 transition"
-                    >
-                      추가 이용 문의
-                    </button>
-                  )}
-                </>
-              ) : null}
+              <SubscriptionBadge usage={usage} onManageClick={() => setIsManageOpen(true)} />
+              <Link href="/pricing" className="text-sm text-blue-600 hover:text-blue-800 transition">
+                요금제
+              </Link>
               <button
                 onClick={() => setIsFeedbackOpen(true)}
                 className="text-sm text-gray-600 hover:text-blue-600 flex items-center gap-1 transition"
@@ -444,6 +439,14 @@ export default function Home() {
         isOpen={isFeedbackOpen}
         onClose={() => setIsFeedbackOpen(false)}
         userEmail={session.user?.email || ""}
+      />
+
+      {/* 구독 관리 모달 */}
+      <SubscriptionManageModal
+        isOpen={isManageOpen}
+        onClose={() => setIsManageOpen(false)}
+        usage={usage}
+        onUsageRefresh={fetchUsage}
       />
     </div>
   );

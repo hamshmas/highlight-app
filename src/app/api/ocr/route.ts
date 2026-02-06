@@ -632,17 +632,22 @@ export async function POST(request: NextRequest) {
   const provider = (session as any).provider || "google";
   const userId = (session as any).providerAccountId || userEmail;
 
-  // 카카오 사용자 사용량 제한 체크
-  if (provider === "kakao") {
-    const { canUseService, incrementUsage } = await import("@/lib/usage");
-    const { canUse, remaining } = await canUseService(userId, provider);
+  // 사용량 제한 체크 (Google @sjinlaw.com 관리자 제외)
+  if (provider !== "google") {
+    const { canUseService } = await import("@/lib/usage");
+    const { canUse, remaining, plan } = await canUseService(userId, provider);
 
     if (!canUse) {
+      const upgradeMessage = plan === 'free'
+        ? "무료 사용량(3회)을 모두 사용하셨습니다. 프리미엄 플랜으로 업그레이드하면 더 많은 변환을 이용할 수 있습니다."
+        : `현재 플랜의 월 사용량을 모두 사용하셨습니다. 더 높은 플랜으로 업그레이드하세요.`;
       return NextResponse.json(
         {
           error: "사용 한도 초과",
-          message: "무료 사용량(3회)을 모두 사용하셨습니다. 추가 이용을 원하시면 관리자에게 문의하세요.",
-          limitReached: true
+          message: upgradeMessage,
+          limitReached: true,
+          plan,
+          upgradeUrl: "/pricing",
         },
         { status: 403 }
       );

@@ -4,7 +4,7 @@ import { useSession } from "next-auth/react";
 import { useState, useEffect } from "react";
 import Link from "next/link";
 
-type TableName = "feedback" | "user_usage" | "activity_logs";
+type TableName = "feedback" | "user_usage" | "activity_logs" | "subscriptions" | "payment_history";
 
 export default function AdminPage() {
   const { data: session, status } = useSession();
@@ -80,6 +80,8 @@ export default function AdminPage() {
     { name: "feedback", label: "피드백" },
     { name: "user_usage", label: "사용량" },
     { name: "activity_logs", label: "활동 로그" },
+    { name: "subscriptions", label: "구독" },
+    { name: "payment_history", label: "결제 내역" },
   ];
 
   return (

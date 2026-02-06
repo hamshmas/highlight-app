@@ -14,7 +14,7 @@ export async function GET(request: NextRequest) {
         const provider = (session as any).provider || "google";
         const userId = (session as any).providerAccountId || session.user.email || "unknown";
 
-        const { remaining, maxLimit, isUnlimited } = await getRemainingUsage(userId, provider);
+        const { remaining, maxLimit, isUnlimited, plan, periodEnd, cardLast4 } = await getRemainingUsage(userId, provider);
 
         return NextResponse.json({
             provider,
@@ -22,6 +22,9 @@ export async function GET(request: NextRequest) {
             maxLimit,
             isUnlimited,
             used: isUnlimited ? 0 : maxLimit - remaining,
+            plan,
+            periodEnd,
+            cardLast4,
         });
     } catch (error) {
         console.error("Error fetching usage:", error);

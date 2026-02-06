@@ -55,6 +55,20 @@ export async function GET(request: NextRequest) {
           .order("created_at", { ascending: false })
           .limit(100);
         break;
+      case "subscriptions":
+        query = supabase
+          .from("subscriptions")
+          .select("*")
+          .order("updated_at", { ascending: false })
+          .limit(100);
+        break;
+      case "payment_history":
+        query = supabase
+          .from("payment_history")
+          .select("*")
+          .order("created_at", { ascending: false })
+          .limit(100);
+        break;
       default:
         return NextResponse.json({ error: "Invalid table" }, { status: 400 });
     }
