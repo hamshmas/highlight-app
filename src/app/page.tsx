@@ -303,12 +303,22 @@ export default function Home() {
                   로딩중...
                 </span>
               ) : !usage.isUnlimited ? (
-                <span className={`text-xs px-2 py-1 rounded-full ${usage.remaining > 0
-                  ? 'bg-blue-100 text-blue-700'
-                  : 'bg-red-100 text-red-700'
-                  }`}>
-                  남은 변환: {usage.remaining}/{usage.maxLimit}
-                </span>
+                <>
+                  <span className={`text-xs px-2 py-1 rounded-full ${usage.remaining > 0
+                    ? 'bg-blue-100 text-blue-700'
+                    : 'bg-red-100 text-red-700'
+                    }`}>
+                    남은 변환: {usage.remaining}/{usage.maxLimit}
+                  </span>
+                  {usage.remaining === 0 && (
+                    <button
+                      onClick={() => setIsFeedbackOpen(true)}
+                      className="text-xs px-2 py-1 rounded-full bg-orange-100 text-orange-700 hover:bg-orange-200 transition"
+                    >
+                      추가 이용 문의
+                    </button>
+                  )}
+                </>
               ) : null}
               <button
                 onClick={() => setIsFeedbackOpen(true)}
