@@ -2,6 +2,7 @@
 
 import { useSession, signIn, signOut } from "next-auth/react";
 import { useState, useMemo, useEffect } from "react";
+import { FeedbackModal } from "@/components/feedback/FeedbackModal";
 import { useTimer, useFileUpload, useTransactionEditor, useOcrProcess } from "@/hooks";
 import { HIGHLIGHT_COLORS, COLUMN_LABELS, SUPPORTED_FILE_EXTENSIONS } from "@/lib/constants";
 import {
@@ -32,6 +33,9 @@ export default function Home() {
 
   // 사용량 상태
   const [usage, setUsage] = useState<UsageData | null>(null);
+
+  // 피드백 모달 상태
+  const [isFeedbackOpen, setIsFeedbackOpen] = useState(false);
 
   // 사용량 조회
   useEffect(() => {
@@ -306,6 +310,13 @@ export default function Home() {
                   남은 변환: {usage.remaining}/{usage.maxLimit}
                 </span>
               ) : null}
+              <button
+                onClick={() => setIsFeedbackOpen(true)}
+                className="text-sm text-gray-600 hover:text-blue-600 flex items-center gap-1 transition"
+              >
+                <FeedbackIcon />
+                피드백
+              </button>
               <button onClick={() => signOut()} className="text-sm text-red-600 hover:text-red-800">로그아웃</button>
             </div>
           </div>
@@ -417,6 +428,13 @@ export default function Home() {
           </div>
         )}
       </div>
+
+      {/* 피드백 모달 */}
+      <FeedbackModal
+        isOpen={isFeedbackOpen}
+        onClose={() => setIsFeedbackOpen(false)}
+        userEmail={session.user?.email || ""}
+      />
     </div>
   );
 }
@@ -454,6 +472,14 @@ function DocumentIcon() {
   return (
     <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+    </svg>
+  );
+}
+
+function FeedbackIcon() {
+  return (
+    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 8h10M7 12h4m1 8l-4-4H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-3l-4 4z" />
     </svg>
   );
 }
