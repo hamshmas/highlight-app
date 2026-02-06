@@ -174,15 +174,7 @@ export default function Home() {
         <div className="bg-white p-8 rounded-lg shadow-md max-w-md w-full text-center">
           <h1 className="text-2xl font-bold text-gray-800 mb-4">거래내역 하이라이트</h1>
           <p className="text-gray-600 mb-6">스캔/이미지 PDF 거래내역에서 기준 금액 이상 거래를 하이라이트합니다.</p>
-          <p className="text-sm text-gray-500 mb-6">sjinlaw.com 도메인 계정으로 로그인하세요.</p>
           <div className="flex flex-col gap-3">
-            <button
-              onClick={() => signIn("google")}
-              className="w-full bg-blue-600 text-white py-3 px-4 rounded-lg hover:bg-blue-700 transition flex items-center justify-center gap-2"
-            >
-              <GoogleIcon />
-              Google로 로그인
-            </button>
             <button
               onClick={() => signIn("kakao")}
               className="w-full bg-[#FEE500] text-[#000000] py-3 px-4 rounded-lg hover:bg-[#FDD835] transition flex items-center justify-center gap-2"
@@ -331,12 +323,14 @@ export default function Home() {
               : "PDF, 이미지, 엑셀 파일을 업로드하면 자동으로 거래내역을 추출합니다."
             }
           </p>
-          <div className="mt-4">
-            <a href="/bank-rules" className="inline-flex items-center gap-2 px-4 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 transition text-sm font-medium">
-              <DocumentIcon />
-              은행 파싱 규칙 보기
-            </a>
-          </div>
+          {usage?.isUnlimited && (
+            <div className="mt-4">
+              <a href="/bank-rules" className="inline-flex items-center gap-2 px-4 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 transition text-sm font-medium">
+                <DocumentIcon />
+                은행 파싱 규칙 보기
+              </a>
+            </div>
+          )}
         </div>
 
         {/* 파일 업로드 */}
