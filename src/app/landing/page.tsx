@@ -94,7 +94,7 @@ export default function LandingPage() {
                         {/* Badge */}
                         <div className="inline-flex items-center gap-2 px-4 py-2 bg-[#E8F3FF] rounded-full mb-8">
                             <span className="w-2 h-2 bg-[#0064FF] rounded-full animate-pulse" />
-                            <span className="text-sm text-[#0064FF] font-medium">법무사 · 세무사를 위한 AI 솔루션</span>
+                            <span className="text-sm text-[#0064FF] font-medium">변호사 · 법무사 · 세무사 · 회계사를 위한 AI 솔루션</span>
                         </div>
 
                         {/* Headline */}
