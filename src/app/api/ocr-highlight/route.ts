@@ -200,7 +200,7 @@ export async function POST(request: NextRequest) {
     }, userId, provider);
 
     return NextResponse.json(
-      { error: error instanceof Error ? error.message : "Excel 생성 중 오류 발생" },
+      { error: "Excel 생성 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요." },
       { status: 500 }
     );
   }
