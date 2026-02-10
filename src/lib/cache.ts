@@ -75,6 +75,8 @@ export async function saveParsing(params: {
   tokenUsage?: Record<string, unknown>;
   aiCost?: Record<string, unknown>;
   userEmail?: string;
+  userId?: string;
+  provider?: string;
 }): Promise<void> {
   const client = getSupabase();
   if (!client) {
@@ -98,6 +100,8 @@ export async function saveParsing(params: {
         ai_cost: params.aiCost || null,
         expires_at: expiresAt.toISOString(),
         user_email: params.userEmail || null,
+        user_id: params.userId || null,
+        provider: params.provider || null,
         hit_count: 0,
         created_at_kst: getKSTTimestamp(),
       },

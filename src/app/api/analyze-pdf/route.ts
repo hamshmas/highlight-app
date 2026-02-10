@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/app/api/auth/[...nextauth]/route";
+import { rateLimit } from "@/lib/rate-limit";
 import * as mupdf from "mupdf";
 
 interface PdfAnalysisResult {
@@ -51,8 +52,18 @@ function analyzePdfType(buffer: ArrayBuffer): PdfAnalysisResult {
 
 export async function POST(request: NextRequest) {
   const session = await getServerSession(authOptions);
-  if (!session) {
+  if (!session?.user?.email) {
     return NextResponse.json({ error: "로그인이 필요합니다" }, { status: 401 });
+  }
+
+  // Rate limit: 분당 20회
+  const userId = (session as any).providerAccountId || session.user.email;
+  const { allowed } = rateLimit(`analyze-pdf:${userId}`, 20, 60 * 1000);
+  if (!allowed) {
+    return NextResponse.json(
+      { error: "요청이 너무 많습니다. 잠시 후 다시 시도해주세요." },
+      { status: 429, headers: { "Retry-After": "60" } }
+    );
   }
 
   try {

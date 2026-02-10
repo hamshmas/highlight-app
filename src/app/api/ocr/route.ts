@@ -871,6 +871,8 @@ export async function POST(request: NextRequest) {
             tokenUsage: { inputTokens: 0, outputTokens: 0 },
             aiCost: { usd: 0, krw: 0 },
             userEmail,
+            userId,
+            provider,
           });
           console.log(`Cached Excel parsing result for ${fileName}`);
         }
@@ -1109,6 +1111,8 @@ export async function POST(request: NextRequest) {
               tokenUsage: { ...totalTokenUsage },
               aiCost: { ...cost },
               userEmail,
+              userId,
+              provider,
             });
           }
 
@@ -1194,6 +1198,8 @@ export async function POST(request: NextRequest) {
             tokenUsage: { ...totalTokenUsage },
             aiCost: { ...cost },
             userEmail,
+            userId,
+            provider,
           });
         }
 
@@ -1280,6 +1286,8 @@ export async function POST(request: NextRequest) {
         tokenUsage: { ...tokenUsage },
         aiCost: { ...cost },
         userEmail,
+        userId,
+        provider,
       });
       console.log(`Cached parsing result for ${fileName}`);
     }
