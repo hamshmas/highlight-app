@@ -151,10 +151,11 @@ export async function incrementUsage(
  */
 export async function canUseService(
     userId: string,
-    provider: string
+    provider: string,
+    userEmail?: string
 ): Promise<{ canUse: boolean; remaining: number; maxLimit: number; plan: PlanType }> {
-    // 구글 @sjinlaw.com 사용자는 무제한 (관리자)
-    if (provider === "google") {
+    // 구글 @sjinlaw.com 관리자만 무제한
+    if (provider === "google" && userEmail?.endsWith("@sjinlaw.com")) {
         return { canUse: true, remaining: -1, maxLimit: -1, plan: 'enterprise' as PlanType };
     }
 
@@ -205,7 +206,8 @@ export async function canUseService(
  */
 export async function getRemainingUsage(
     userId: string,
-    provider: string
+    provider: string,
+    userEmail?: string
 ): Promise<{
     remaining: number;
     maxLimit: number;
@@ -214,11 +216,12 @@ export async function getRemainingUsage(
     periodEnd: string | null;
     cardLast4: string | null;
 }> {
-    if (provider === "google") {
+    // 구글 @sjinlaw.com 관리자만 무제한
+    if (provider === "google" && userEmail?.endsWith("@sjinlaw.com")) {
         return { remaining: -1, maxLimit: -1, isUnlimited: true, plan: 'enterprise', periodEnd: null, cardLast4: null };
     }
 
-    const { remaining, maxLimit, plan } = await canUseService(userId, provider);
+    const { remaining, maxLimit, plan } = await canUseService(userId, provider, userEmail);
 
     // 구독 정보에서 추가 데이터 가져오기
     const sub = await getUserSubscription(userId, provider);

@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
+import { authOptions } from "@/app/api/auth/[...nextauth]/route";
 import * as mupdf from "mupdf";
 
 interface PdfAnalysisResult {
@@ -49,7 +50,7 @@ function analyzePdfType(buffer: ArrayBuffer): PdfAnalysisResult {
 }
 
 export async function POST(request: NextRequest) {
-  const session = await getServerSession();
+  const session = await getServerSession(authOptions);
   if (!session) {
     return NextResponse.json({ error: "로그인이 필요합니다" }, { status: 401 });
   }

@@ -1,14 +1,21 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
+import { authOptions } from "@/app/api/auth/[...nextauth]/route";
 import { createUploadUrl } from "@/lib/storage";
 
 export async function POST(request: NextRequest) {
-  const session = await getServerSession();
+  const session = await getServerSession(authOptions);
   if (!session) {
     return NextResponse.json({ error: "로그인이 필요합니다" }, { status: 401 });
   }
 
-  const userEmail = session.user?.email || "unknown";
+  const userEmail = session.user?.email;
+  if (!userEmail) {
+    return NextResponse.json(
+      { error: "세션 정보가 유효하지 않습니다. 다시 로그인해주세요." },
+      { status: 401 }
+    );
+  }
 
   try {
     const { fileName, fileSize } = await request.json();

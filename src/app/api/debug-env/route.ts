@@ -1,8 +1,17 @@
 import { NextResponse } from "next/server";
+import { getServerSession } from "next-auth";
+import { authOptions } from "@/app/api/auth/[...nextauth]/route";
 import { ImageAnnotatorClient } from "@google-cloud/vision";
 import { GoogleAuth } from "google-auth-library";
 
+const ALLOWED_DOMAIN = "sjinlaw.com";
+
 export async function GET() {
+  const session = await getServerSession(authOptions);
+  if (!session?.user?.email?.endsWith(`@${ALLOWED_DOMAIN}`)) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
   const projectId = process.env.GOOGLE_CLOUD_PROJECT_ID;
   const clientEmail = process.env.GOOGLE_CLOUD_CLIENT_EMAIL;
   const privateKey = process.env.GOOGLE_CLOUD_PRIVATE_KEY;

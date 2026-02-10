@@ -11,10 +11,15 @@ export async function GET(request: NextRequest) {
             return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
         }
 
-        const provider = (session as any).provider || "google";
-        const userId = (session as any).providerAccountId || session.user.email || "unknown";
+        const provider = (session as any).provider;
+        const userId = (session as any).providerAccountId || session.user.email;
 
-        const { remaining, maxLimit, isUnlimited, plan, periodEnd, cardLast4 } = await getRemainingUsage(userId, provider);
+        if (!provider || !userId) {
+            return NextResponse.json({ error: "세션 정보가 유효하지 않습니다. 다시 로그인해주세요." }, { status: 401 });
+        }
+
+        const userEmail = session.user.email || "";
+        const { remaining, maxLimit, isUnlimited, plan, periodEnd, cardLast4 } = await getRemainingUsage(userId, provider, userEmail);
 
         return NextResponse.json({
             provider,

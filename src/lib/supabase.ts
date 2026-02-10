@@ -29,7 +29,9 @@ export function getKSTTimestamp(): string {
 export async function logAction(
   userEmail: string,
   action: string,
-  details: Record<string, unknown> = {}
+  details: Record<string, unknown> = {},
+  userId?: string,
+  provider?: string
 ) {
   try {
     const client = getSupabase();
@@ -44,6 +46,8 @@ export async function logAction(
       details: details,
       created_at_kst: getKSTTimestamp(),
       created_at: new Date().toISOString(),
+      ...(userId && { user_id: userId }),
+      ...(provider && { provider: provider }),
     });
 
     if (error) {

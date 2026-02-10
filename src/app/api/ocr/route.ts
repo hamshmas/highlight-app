@@ -628,14 +628,26 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "로그인이 필요합니다" }, { status: 401 });
   }
 
-  const userEmail = session.user?.email || "unknown";
-  const provider = (session as any).provider || "google";
-  const userId = (session as any).providerAccountId || userEmail;
+  const userEmail = session.user?.email;
+  const provider = (session as any).provider;
+  const providerAccountId = (session as any).providerAccountId;
+
+  // 세션 정보 불완전 시 요청 차단 (세션 유실로 인한 무제한 사용 방지)
+  if (!userEmail || !provider || !providerAccountId) {
+    console.error("Incomplete session info:", { userEmail, provider, providerAccountId: !!providerAccountId });
+    return NextResponse.json(
+      { error: "세션 정보가 유효하지 않습니다. 다시 로그인해주세요." },
+      { status: 401 }
+    );
+  }
+
+  const userId = providerAccountId;
 
   // 사용량 제한 체크 (Google @sjinlaw.com 관리자 제외)
-  if (provider !== "google") {
+  const isAdmin = provider === "google" && userEmail.endsWith("@sjinlaw.com");
+  if (!isAdmin) {
     const { canUseService } = await import("@/lib/usage");
-    const { canUse, remaining, plan } = await canUseService(userId, provider);
+    const { canUse, remaining, plan } = await canUseService(userId, provider, userEmail);
 
     if (!canUse) {
       const upgradeMessage = plan === 'free'
@@ -742,7 +754,7 @@ export async function POST(request: NextRequest) {
           transactionCount: cached.parsing_result.length,
           columns: cached.columns,
           cacheHitCount: cached.hit_count + 1,
-        });
+        }, userId, provider);
 
         // 디버그: 캐시 데이터 출력
         console.log("Cached columns:", cached.columns);
@@ -750,11 +762,11 @@ export async function POST(request: NextRequest) {
           console.log("Cached first transaction:", JSON.stringify(cached.parsing_result[0]));
         }
 
-        // 카카오 사용자 사용량 증가 (캐시 히트도 1회 사용으로 카운트)
-        if (provider === "kakao") {
+        // 사용량 증가 (캐시 히트도 1회 사용으로 카운트, 관리자 제외)
+        if (!isAdmin) {
           const { incrementUsage } = await import("@/lib/usage");
           await incrementUsage(userId, provider);
-          console.log(`Usage incremented for Kakao user: ${userId} (cache hit)`);
+          console.log(`Usage incremented for ${provider} user: ${userId} (cache hit)`);
         }
 
         return NextResponse.json({
@@ -869,16 +881,16 @@ export async function POST(request: NextRequest) {
           parsingMethod: "excel-direct",
           documentType: "excel",
           aiCost: { usd: 0, krw: 0 },
-        });
+        }, userId, provider);
 
         const elapsed = Date.now() - startTime;
         console.log(`Excel processing completed in ${elapsed}ms`);
 
-        // 카카오 사용자 사용량 증가
-        if (provider === "kakao") {
+        // 사용량 증가 (관리자 제외)
+        if (!isAdmin) {
           const { incrementUsage } = await import("@/lib/usage");
           await incrementUsage(userId, provider);
-          console.log(`Usage incremented for Kakao user: ${userId} (excel direct)`);
+          console.log(`Usage incremented for ${provider} user: ${userId} (excel direct)`);
         }
 
         return NextResponse.json({
@@ -1107,7 +1119,7 @@ export async function POST(request: NextRequest) {
             documentType,
             aiCost: cost,
             tokenUsage: totalTokenUsage,
-          });
+          }, userId, provider);
 
           // 디버그: 컬럼과 첫 번째 거래 출력
           console.log("Returning columns:", columns);
@@ -1192,7 +1204,7 @@ export async function POST(request: NextRequest) {
           documentType,
           aiCost: cost,
           tokenUsage: totalTokenUsage,
-        });
+        }, userId, provider);
 
         return NextResponse.json({
           success: true,
@@ -1279,10 +1291,10 @@ export async function POST(request: NextRequest) {
       parsingMethod: "ai",
       aiCost: cost,
       tokenUsage: tokenUsage,
-    });
+    }, userId, provider);
 
-    // 카카오 사용자 사용량 증가
-    if (provider === "kakao") {
+    // 사용량 증가 (관리자 제외)
+    if (!isAdmin) {
       const { incrementUsage } = await import("@/lib/usage");
       await incrementUsage(userId, provider);
     }
@@ -1310,19 +1322,17 @@ export async function POST(request: NextRequest) {
     await logAction(userEmail, "ocr_error", {
       error: error instanceof Error ? error.message : "Unknown error",
       stack: error instanceof Error ? error.stack : undefined,
-    });
+    }, userId, provider);
 
-    // 더 구체적인 에러 메시지 제공
-    let errorMessage = "OCR 처리 중 오류 발생";
+    // 사용자에게는 일반적인 에러 메시지만 노출 (내부 정보 차단)
+    let errorMessage = "OCR 처리 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요.";
     if (error instanceof Error) {
-      if (error.message.includes("pattern")) {
-        errorMessage = "Google Cloud 인증 설정 오류입니다. 환경 변수를 확인해주세요.";
+      if (error.message.includes("pattern") || error.message.includes("UNAUTHENTICATED")) {
+        errorMessage = "서비스 인증 오류가 발생했습니다. 관리자에게 문의해주세요.";
       } else if (error.message.includes("PERMISSION_DENIED")) {
-        errorMessage = "Google Cloud Vision API 권한이 없습니다.";
-      } else if (error.message.includes("UNAUTHENTICATED")) {
-        errorMessage = "Google Cloud 인증에 실패했습니다.";
-      } else {
-        errorMessage = error.message;
+        errorMessage = "서비스 권한 오류가 발생했습니다. 관리자에게 문의해주세요.";
+      } else if (error.message.includes("RESOURCE_EXHAUSTED") || error.message.includes("429")) {
+        errorMessage = "요청이 너무 많습니다. 잠시 후 다시 시도해주세요.";
       }
     }
 

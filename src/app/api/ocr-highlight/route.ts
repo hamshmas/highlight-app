@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
+import { authOptions } from "@/app/api/auth/[...nextauth]/route";
 import ExcelJS from "exceljs";
 import { logAction } from "@/lib/supabase";
 
@@ -7,12 +8,20 @@ import { logAction } from "@/lib/supabase";
 type TransactionRow = Record<string, string | number>;
 
 export async function POST(request: NextRequest) {
-  const session = await getServerSession();
+  const session = await getServerSession(authOptions);
   if (!session) {
     return NextResponse.json({ error: "로그인이 필요합니다" }, { status: 401 });
   }
 
-  const userEmail = session.user?.email || "unknown";
+  const userEmail = session.user?.email;
+  const provider = (session as any).provider;
+  const userId = (session as any).providerAccountId || userEmail;
+  if (!userEmail) {
+    return NextResponse.json(
+      { error: "세션 정보가 유효하지 않습니다. 다시 로그인해주세요." },
+      { status: 401 }
+    );
+  }
 
   try {
     const body = await request.json();
@@ -169,7 +178,7 @@ export async function POST(request: NextRequest) {
       color: color,
       totalRows: transactions.length,
       highlightedRows: highlightedRows,
-    });
+    }, userId, provider);
 
     // 결과 파일 생성
     const outputBuffer = await workbook.xlsx.writeBuffer();
@@ -188,7 +197,7 @@ export async function POST(request: NextRequest) {
 
     await logAction(userEmail, "ocr_highlight_error", {
       error: error instanceof Error ? error.message : "Unknown error",
-    });
+    }, userId, provider);
 
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "Excel 생성 중 오류 발생" },

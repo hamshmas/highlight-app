@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
+import { authOptions } from "@/app/api/auth/[...nextauth]/route";
 import ExcelJS from "exceljs";
 import * as XLSX from "xlsx";
 import { logAction } from "@/lib/supabase";
@@ -13,12 +14,20 @@ async function convertXlsToXlsx(arrayBuffer: ArrayBuffer): Promise<ArrayBuffer> 
 
 export async function POST(request: NextRequest) {
   // 인증 확인
-  const session = await getServerSession();
+  const session = await getServerSession(authOptions);
   if (!session) {
     return NextResponse.json({ error: "로그인이 필요합니다" }, { status: 401 });
   }
 
-  const userEmail = session.user?.email || "unknown";
+  const userEmail = session.user?.email;
+  const provider = (session as any).provider;
+  const userId = (session as any).providerAccountId || userEmail;
+  if (!userEmail) {
+    return NextResponse.json(
+      { error: "세션 정보가 유효하지 않습니다. 다시 로그인해주세요." },
+      { status: 401 }
+    );
+  }
 
   try {
     const formData = await request.formData();
@@ -148,7 +157,7 @@ export async function POST(request: NextRequest) {
       color: color,
       totalRows: worksheet.rowCount,
       highlightedRows: highlightedRows,
-    });
+    }, userId, provider);
 
     // 결과 파일 생성
     const outputBuffer = await workbook.xlsx.writeBuffer();
@@ -171,7 +180,7 @@ export async function POST(request: NextRequest) {
     // 에러도 로그 기록
     await logAction(userEmail, "highlight_error", {
       error: errorMessage,
-    });
+    }, userId, provider);
 
     // 암호 보호된 Excel 감지 (더 구체적인 조건)
     const lowerMessage = errorMessage.toLowerCase();

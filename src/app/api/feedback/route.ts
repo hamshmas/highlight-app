@@ -36,6 +36,8 @@ export async function POST(request: NextRequest) {
     }
 
     const userEmail = session.user.email;
+    const provider = (session as any).provider;
+    const userId = (session as any).providerAccountId || userEmail;
 
     // 2. FormData 파싱
     const formData = await request.formData();
@@ -202,7 +204,7 @@ export async function POST(request: NextRequest) {
       category,
       title,
       hasScreenshot: !!screenshotPath,
-    });
+    }, userId, provider);
 
     return NextResponse.json({
       success: true,

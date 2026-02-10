@@ -25,8 +25,12 @@ export async function GET() {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const provider = (session as any).provider || "google";
-  const userId = (session as any).providerAccountId || session.user.email || "unknown";
+  const provider = (session as any).provider;
+  const userId = (session as any).providerAccountId || session.user?.email;
+
+  if (!provider || !userId) {
+    return NextResponse.json({ error: "세션 정보가 유효하지 않습니다. 다시 로그인해주세요." }, { status: 401 });
+  }
 
   const subscription = await getUserSubscription(userId, provider);
 
@@ -55,8 +59,12 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const provider = (session as any).provider || "google";
-  const userId = (session as any).providerAccountId || session.user.email || "unknown";
+  const provider = (session as any).provider;
+  const userId = (session as any).providerAccountId || session.user?.email;
+
+  if (!provider || !userId) {
+    return NextResponse.json({ error: "세션 정보가 유효하지 않습니다. 다시 로그인해주세요." }, { status: 401 });
+  }
 
   try {
     const { plan } = await request.json();
