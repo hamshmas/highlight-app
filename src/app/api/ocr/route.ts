@@ -4,6 +4,7 @@ import { authOptions } from "@/app/api/auth/[...nextauth]/route";
 import { ImageAnnotatorClient } from "@google-cloud/vision";
 import { GoogleAuth } from "google-auth-library";
 import { logAction } from "@/lib/supabase";
+import { rateLimit } from "@/lib/rate-limit";
 import { generateFileHash, getCachedParsing, saveParsing, isCacheEnabled, deleteCachedParsing } from "@/lib/cache";
 import { downloadFileFromStorage, deleteFileFromStorage } from "@/lib/storage";
 import * as mupdf from "mupdf";
@@ -642,6 +643,15 @@ export async function POST(request: NextRequest) {
   }
 
   const userId = providerAccountId;
+
+  // Rate limit: 분당 10회 (Gemini API 비용 보호)
+  const { allowed, remaining: rlRemaining } = rateLimit(`ocr:${userId}`, 10, 60 * 1000);
+  if (!allowed) {
+    return NextResponse.json(
+      { error: "요청이 너무 많습니다. 잠시 후 다시 시도해주세요." },
+      { status: 429, headers: { "Retry-After": "60" } }
+    );
+  }
 
   // 사용량 제한 체크 (Google @sjinlaw.com 관리자 제외)
   const isAdmin = provider === "google" && userEmail.endsWith("@sjinlaw.com");

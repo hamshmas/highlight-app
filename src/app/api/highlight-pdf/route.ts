@@ -3,6 +3,7 @@ import { getServerSession } from "next-auth";
 import { authOptions } from "@/app/api/auth/[...nextauth]/route";
 import ExcelJS from "exceljs";
 import { logAction } from "@/lib/supabase";
+import { rateLimit } from "@/lib/rate-limit";
 import { generateFileHash, getCachedParsing, saveParsing, isCacheEnabled } from "@/lib/cache";
 import * as mupdf from "mupdf";
 import { GoogleGenerativeAI } from "@google/generative-ai";
@@ -629,6 +630,15 @@ export async function POST(request: NextRequest) {
     return NextResponse.json(
       { error: "세션 정보가 유효하지 않습니다. 다시 로그인해주세요." },
       { status: 401 }
+    );
+  }
+
+  // Rate limit: 분당 10회
+  const { allowed } = rateLimit(`highlight-pdf:${userId}`, 10, 60 * 1000);
+  if (!allowed) {
+    return NextResponse.json(
+      { error: "요청이 너무 많습니다. 잠시 후 다시 시도해주세요." },
+      { status: 429, headers: { "Retry-After": "60" } }
     );
   }
 

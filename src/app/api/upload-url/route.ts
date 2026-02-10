@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/app/api/auth/[...nextauth]/route";
 import { createUploadUrl } from "@/lib/storage";
+import { rateLimit } from "@/lib/rate-limit";
 
 export async function POST(request: NextRequest) {
   const session = await getServerSession(authOptions);
@@ -14,6 +15,15 @@ export async function POST(request: NextRequest) {
     return NextResponse.json(
       { error: "세션 정보가 유효하지 않습니다. 다시 로그인해주세요." },
       { status: 401 }
+    );
+  }
+
+  // Rate limit: 분당 20회
+  const { allowed } = rateLimit(`upload:${userEmail}`, 20, 60 * 1000);
+  if (!allowed) {
+    return NextResponse.json(
+      { error: "요청이 너무 많습니다. 잠시 후 다시 시도해주세요." },
+      { status: 429, headers: { "Retry-After": "60" } }
     );
   }
 
