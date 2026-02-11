@@ -50,7 +50,15 @@ export default function Home() {
   // 사용량 조회
   const fetchUsage = () => {
     fetch("/api/usage")
-      .then((res) => res.json())
+      .then((res) => {
+        if (!res.ok) {
+          if (res.status === 401) {
+            console.warn("Session expired, please re-login");
+          }
+          throw new Error(`Usage fetch failed: ${res.status}`);
+        }
+        return res.json();
+      })
       .then((data) => setUsage(data))
       .catch((err) => console.error("Failed to fetch usage:", err));
   };
