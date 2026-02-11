@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
-import { authOptions } from "@/app/api/auth/[...nextauth]/route";
+import { authOptions } from "@/lib/auth";
 import { ImageAnnotatorClient } from "@google-cloud/vision";
 import { GoogleAuth } from "google-auth-library";
 import { logAction } from "@/lib/supabase";
@@ -630,19 +630,17 @@ export async function POST(request: NextRequest) {
   }
 
   const userEmail = session.user?.email;
-  const provider = (session as any).provider;
-  const providerAccountId = (session as any).providerAccountId;
-
-  // 세션 정보 불완전 시 요청 차단 (세션 유실로 인한 무제한 사용 방지)
-  if (!userEmail || !provider || !providerAccountId) {
-    console.error("Incomplete session info:", { userEmail, provider, providerAccountId: !!providerAccountId });
+  if (!userEmail) {
     return NextResponse.json(
       { error: "세션 정보가 유효하지 않습니다. 다시 로그인해주세요." },
       { status: 401 }
     );
   }
 
-  const userId = providerAccountId;
+  const provider = (session as any).provider || "unknown";
+  const userId = (session as any).providerAccountId || userEmail;
+
+  console.log("OCR session info:", { userEmail, provider, userId });
 
   // Rate limit: 분당 10회 (Gemini API 비용 보호)
   const { allowed, remaining: rlRemaining } = rateLimit(`ocr:${userId}`, 10, 60 * 1000);

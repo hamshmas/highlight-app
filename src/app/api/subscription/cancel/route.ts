@@ -20,10 +20,10 @@ export async function POST() {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const provider = (session as any).provider;
+  const provider = (session as any).provider || "unknown";
   const userId = (session as any).providerAccountId || session.user?.email;
 
-  if (!provider || !userId) {
+  if (!userId) {
     return NextResponse.json({ error: "세션 정보가 유효하지 않습니다. 다시 로그인해주세요." }, { status: 401 });
   }
 
