@@ -10,13 +10,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "로그인이 필요합니다" }, { status: 401 });
   }
 
-  const userEmail = session.user?.email;
-  if (!userEmail) {
-    return NextResponse.json(
-      { error: "세션 정보가 유효하지 않습니다. 다시 로그인해주세요." },
-      { status: 401 }
-    );
-  }
+  const userEmail = session.user?.email || "";
 
   // Rate limit: 분당 20회
   const { allowed } = rateLimit(`upload:${userEmail}`, 20, 60 * 1000);

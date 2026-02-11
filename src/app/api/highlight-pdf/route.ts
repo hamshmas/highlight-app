@@ -623,15 +623,9 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "로그인이 필요합니다" }, { status: 401 });
   }
 
-  const userEmail = session.user?.email;
-  const provider = (session as any).provider;
-  const userId = (session as any).providerAccountId || userEmail;
-  if (!userEmail) {
-    return NextResponse.json(
-      { error: "세션 정보가 유효하지 않습니다. 다시 로그인해주세요." },
-      { status: 401 }
-    );
-  }
+  const userEmail = session.user?.email || "";
+  const provider = (session as any).provider || "unknown";
+  const userId = (session as any).providerAccountId || userEmail || session.user?.name || "anonymous";
 
   // Rate limit: 분당 10회
   const { allowed } = rateLimit(`highlight-pdf:${userId}`, 10, 60 * 1000);

@@ -629,18 +629,12 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "로그인이 필요합니다" }, { status: 401 });
   }
 
-  const userEmail = session.user?.email;
-  if (!userEmail) {
-    return NextResponse.json(
-      { error: "세션 정보가 유효하지 않습니다. 다시 로그인해주세요." },
-      { status: 401 }
-    );
-  }
-
+  const userEmail = session.user?.email || "";
   const provider = (session as any).provider || "unknown";
-  const userId = (session as any).providerAccountId || userEmail;
+  const providerAccountId = (session as any).providerAccountId;
+  const userId = providerAccountId || userEmail || session.user?.name || "anonymous";
 
-  console.log("OCR session info:", { userEmail, provider, userId });
+  console.log("OCR session info:", { userEmail, provider, providerAccountId, userId, userName: session.user?.name });
 
   // Rate limit: 분당 10회 (Gemini API 비용 보호)
   const { allowed, remaining: rlRemaining } = rateLimit(`ocr:${userId}`, 10, 60 * 1000);

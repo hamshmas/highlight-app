@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
-import { authOptions } from "@/app/api/auth/[...nextauth]/route";
+import { authOptions } from "@/lib/auth";
 import { getRemainingUsage } from "@/lib/usage";
 
 export async function GET(request: NextRequest) {
@@ -13,11 +13,7 @@ export async function GET(request: NextRequest) {
 
         const userEmail = session.user.email || "";
         const provider = (session as any).provider || "unknown";
-        const userId = (session as any).providerAccountId || session.user.email;
-
-        if (!userId) {
-            return NextResponse.json({ error: "세션 정보가 유효하지 않습니다. 다시 로그인해주세요." }, { status: 401 });
-        }
+        const userId = (session as any).providerAccountId || session.user.email || session.user.name || "anonymous";
         const { remaining, maxLimit, isUnlimited, plan, periodEnd, cardLast4 } = await getRemainingUsage(userId, provider, userEmail);
 
         return NextResponse.json({
