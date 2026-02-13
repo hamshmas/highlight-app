@@ -1127,6 +1127,13 @@ export async function POST(request: NextRequest) {
             tokenUsage: totalTokenUsage,
           }, userId, provider);
 
+          // 사용량 증가 (관리자 제외)
+          if (!isAdmin) {
+            const { incrementUsage } = await import("@/lib/usage");
+            await incrementUsage(userId, provider);
+            console.log(`Usage incremented for ${provider} user: ${userId} (image-based pdf)`);
+          }
+
           // 디버그: 컬럼과 첫 번째 거래 출력
           console.log("Returning columns:", columns);
           if (allTransactionsFromImages.length > 0) {
@@ -1213,6 +1220,13 @@ export async function POST(request: NextRequest) {
           aiCost: cost,
           tokenUsage: totalTokenUsage,
         }, userId, provider);
+
+        // 사용량 증가 (관리자 제외)
+        if (!isAdmin) {
+          const { incrementUsage } = await import("@/lib/usage");
+          await incrementUsage(userId, provider);
+          console.log(`Usage incremented for ${provider} user: ${userId} (direct image)`);
+        }
 
         return NextResponse.json({
           success: true,
